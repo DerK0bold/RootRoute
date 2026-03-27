@@ -81,9 +81,9 @@ export async function sendMessage(
   // We're using the flash model for speed and cost-efficiency.
   // It also supports Google Search grounding, which is great for staying up-to-date.
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-1.5-flash-latest',
     systemInstruction: SYSTEM_PROMPT,
-    // @ts-ignore - Google Search is supported by Gemini 2.5 but not fully typed in this SDK version
+    // @ts-ignore - Google Search is supported by Gemini 2.0 but specifically for better results
     tools: [{ googleSearch: {} }],
   });
 
@@ -150,7 +150,7 @@ export async function analyzeProductImage(
 ): Promise<OcrProductResult> {
   const genAI = getClient();
   const model = genAI.getGenerativeModel({ 
-    model: 'gemini-1.5-flash',
+    model: 'gemini-1.5-flash-latest',
     // @ts-ignore - Google Search is supported but not fully typed
     tools: [{ googleSearch: {} }],
   });
@@ -219,7 +219,7 @@ export async function checkProductSafety(
 ): Promise<SafetyResult | null> {
   const genAI = getClient();
   const model = genAI.getGenerativeModel({ 
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash-exp',
     // @ts-ignore
     tools: [{ googleSearch: {} }],
   });
