@@ -219,7 +219,7 @@ export async function checkProductSafety(
 ): Promise<SafetyResult | null> {
   const genAI = getClient();
   const model = genAI.getGenerativeModel({ 
-    model: 'gemini-2.0-flash-exp',
+    model: 'gemini-1.5-flash-latest',
     // @ts-ignore
     tools: [{ googleSearch: {} }],
   });
