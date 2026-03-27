@@ -7,6 +7,8 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  Image,
+  ScrollView,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useRouter } from 'expo-router';
@@ -33,10 +35,51 @@ export default function ScannerScreen() {
   const [loading, setLoading] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showOcrCamera, setShowOcrCamera] = useState(false);
+  const [ocrCapturing, setOcrCapturing] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const scannedRef = useRef(false);
   const cameraRef = useRef<CameraView>(null);
   const router = useRouter();
+
+  const normalizeBarcode = (value?: string): string | undefined => {
+    if (!value) return undefined;
+    const compact = value.replace(/\s+/g, '');
+    const exactDigits = compact.match(/\b\d{8,14}\b/);
+    if (exactDigits) return exactDigits[0];
+    const cleanedDigits = compact.replace(/\D/g, '');
+    return cleanedDigits.length >= 8 && cleanedDigits.length <= 14 ? cleanedDigits : undefined;
+  };
+
+  const normalizeLot = (value?: string): string | undefined => {
+    if (!value) return undefined;
+    const normalized = value.replace(/\s+/g, '').trim();
+    return normalized.length >= 3 ? normalized : undefined;
+  };
+
+  const buildSearchCandidates = (name?: string, brand?: string): string[] => {
+    const candidates = new Set<string>();
+    const clean = (value?: string) =>
+      (value || '')
+        .replace(/[|:;,_]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const cleanName = clean(name);
+    const cleanBrand = clean(brand);
+
+    if (cleanName) candidates.add(cleanName);
+    if (cleanBrand && cleanName) candidates.add(`${cleanBrand} ${cleanName}`);
+
+    if (cleanName) {
+      const words = cleanName.split(' ').filter(Boolean);
+      if (words.length > 2) {
+        candidates.add(words.slice(0, 2).join(' '));
+        candidates.add(words.slice(0, 3).join(' '));
+      }
+    }
+
+    return Array.from(candidates).filter((c) => c.length >= 3).slice(0, 4);
+  };
 
   /**
    * Navigates to the product details. 
@@ -98,56 +141,64 @@ export default function ScannerScreen() {
    * (Barcode, Lot Number, or even just a Product Name).
    */
   const handleOcrCapture = async () => {
-    if (ocrLoading || !cameraRef.current) return;
-    setOcrLoading(true);
+    if (ocrLoading || ocrCapturing || !cameraRef.current) return;
     try {
+      setOcrCapturing(true);
       const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.4 });
+      setOcrCapturing(false);
       if (!photo?.base64) {
         Alert.alert('Fehler', 'Foto konnte nicht aufgenommen werden.');
-        setOcrLoading(false);
         return;
       }
 
+      // After the shot is taken, we hide the camera and show a white processing screen.
+      setOcrLoading(true);
       const result = await analyzeProductImage(photo.base64);
 
-      if (result.lotNumber) {
+      const barcode = normalizeBarcode(result.barcode);
+      const lotNumber = normalizeLot(result.lotNumber);
+
+      if (barcode) {
         setShowOcrCamera(false);
-        setOcrLoading(false);
-        router.push(`/product/${result.lotNumber}?isLot=true&ean=${result.barcode || ''}`);
+        router.push(`/product/${barcode}`);
         return;
       }
 
-      if (result.barcode) {
+      if (lotNumber) {
         setShowOcrCamera(false);
-        setOcrLoading(false);
-        router.push(`/product/${result.barcode}`);
+        router.push(`/product/${lotNumber}?isLot=true&ean=${barcode || ''}`);
         return;
       }
 
       if (result.productName) {
-        const searchResult = await searchProductsByName(result.productName);
-        setShowOcrCamera(false);
-        setOcrLoading(false);
-        if (searchResult.found && searchResult.product?.code) {
-          router.push(`/product/${searchResult.product.code}`);
-        } else {
-          Alert.alert(
-            `Produkt erkannt: ${result.productName}`,
-            result.brand
-              ? `Marke: ${result.brand}\n\n${result.description ?? ''}\n\nKein Barcode gefunden – gib die Nummer manuell ein.`
-              : `${result.description ?? ''}\n\nKein Barcode gefunden – gib die Nummer manuell ein.`,
-            [{ text: 'OK' }]
-          );
+        const candidates = buildSearchCandidates(result.productName, result.brand);
+        for (const candidate of candidates) {
+          const searchResult = await searchProductsByName(candidate);
+          if (searchResult.found && searchResult.product?.code) {
+            setShowOcrCamera(false);
+            router.push(`/product/${searchResult.product.code}`);
+            return;
+          }
         }
+
+        setShowOcrCamera(false);
+        Alert.alert(
+          `Produkt erkannt: ${result.productName}`,
+          result.brand
+            ? `Marke: ${result.brand}\n\n${result.description ?? ''}\n\nKein Barcode gefunden - gib die Nummer manuell ein.`
+            : `${result.description ?? ''}\n\nKein Barcode gefunden - gib die Nummer manuell ein.`,
+          [{ text: 'OK' }]
+        );
         return;
       }
 
       setShowOcrCamera(false);
-      setOcrLoading(false);
       Alert.alert('Nichts erkannt', 'Halte die Kamera näher an das Produkt und versuche es erneut.');
     } catch (err: any) {
-      setOcrLoading(false);
       Alert.alert('Fehler', err?.message ?? 'OCR-Analyse fehlgeschlagen.');
+    } finally {
+      setOcrCapturing(false);
+      setOcrLoading(false);
     }
   };
 
@@ -155,15 +206,20 @@ export default function ScannerScreen() {
   if (showOcrCamera && permission?.granted) {
     return (
       <View style={styles.cameraContainer}>
-        <CameraView ref={cameraRef} style={styles.camera} facing="back" />
-        <View style={styles.overlay}>
-          {ocrLoading ? (
-            <View style={styles.ocrLoadingBox}>
-              <ActivityIndicator size="large" color="#fff" />
-              <Text style={styles.ocrLoadingText}>KI analysiert Foto…</Text>
-            </View>
-          ) : (
-            <>
+        {ocrLoading ? (
+          <View style={styles.ocrProcessingScreen}>
+            <ActivityIndicator size="large" color="#006EB7" />
+            <Text style={styles.ocrProcessingText}>KI analysiert dein Foto...</Text>
+          </View>
+        ) : (
+          <>
+            <CameraView
+              ref={cameraRef}
+              style={styles.camera}
+              facing="back"
+              active={!ocrCapturing}
+            />
+            <View style={styles.overlay}>
               <View style={styles.ocrFrame}>
                 <View style={[styles.corner, styles.topLeft]} />
                 <View style={[styles.corner, styles.topRight]} />
@@ -171,16 +227,21 @@ export default function ScannerScreen() {
                 <View style={[styles.corner, styles.bottomRight]} />
               </View>
               <Text style={styles.scanHint}>Produkt/Label in den Rahmen halten</Text>
-              <TouchableOpacity style={styles.captureBtn} onPress={handleOcrCapture} activeOpacity={0.8}>
-                <View style={styles.captureBtnInner} />
+              <TouchableOpacity
+                style={[styles.captureBtn, ocrCapturing && styles.captureBtnDisabled]}
+                onPress={handleOcrCapture}
+                activeOpacity={0.8}
+                disabled={ocrCapturing}
+              >
+                {ocrCapturing ? <ActivityIndicator size="small" color="#fff" /> : <View style={styles.captureBtnInner} />}
               </TouchableOpacity>
-            </>
-          )}
-        </View>
-        {!ocrLoading && (
-          <TouchableOpacity style={styles.closeCameraBtn} onPress={() => setShowOcrCamera(false)}>
-            <Ionicons name="close-circle" size={44} color="#fff" />
-          </TouchableOpacity>
+            </View>
+            {!ocrCapturing && (
+              <TouchableOpacity style={styles.closeCameraBtn} onPress={() => setShowOcrCamera(false)}>
+                <Ionicons name="close-circle" size={44} color="#fff" />
+              </TouchableOpacity>
+            )}
+          </>
         )}
       </View>
     );
@@ -222,11 +283,17 @@ export default function ScannerScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.contentContainer}
+      showsVerticalScrollIndicator={false}
+    >
 
       {/* Hero Welcome Section */}
       <View style={styles.hero}>
-        <Text style={styles.heroEmoji}>🥒</Text>
+        <View style={styles.heroLogoWrap}>
+          <Image source={require('../../RootRouteIcon.png')} style={styles.heroLogo} resizeMode="contain" />
+        </View>
         <Text style={styles.heroTitle}>Wo kommt dein Essen her?</Text>
         <Text style={styles.heroSubtitle}>
           Scanne die Produktionsnummer (Charge) am Boden der Dose oder den Barcode.
@@ -299,22 +366,38 @@ export default function ScannerScreen() {
         ))}
       </View>
 
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
     backgroundColor: '#F8FAFC',
+  },
+  contentContainer: {
     paddingHorizontal: 20,
     paddingTop: 20,
-    paddingBottom: 16,
+    paddingBottom: 28,
   },
 
   // Hero
   hero: { alignItems: 'center', marginBottom: 20 },
-  heroEmoji: { fontSize: 52, marginBottom: 10 },
+  heroLogoWrap: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    overflow: 'hidden',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  heroLogo: { width: 84, height: 84, borderRadius: 42 },
   heroTitle: { fontSize: 22, fontWeight: '800', color: '#1E293B', textAlign: 'center', marginBottom: 6 },
   heroSubtitle: { fontSize: 14, color: '#64748B', textAlign: 'center', lineHeight: 20 },
 
@@ -353,7 +436,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12,
   },
   demoGrid: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 10, flex: 1,
+    flexDirection: 'row', flexWrap: 'wrap', gap: 10,
     alignContent: 'flex-start',
   },
   demoItem: {
@@ -402,6 +485,9 @@ const styles = StyleSheet.create({
     borderWidth: 3, borderColor: '#fff',
     alignItems: 'center', justifyContent: 'center',
   },
+  captureBtnDisabled: {
+    opacity: 0.8,
+  },
   captureBtnInner: {
     width: 54, height: 54, borderRadius: 27,
     backgroundColor: '#fff',
@@ -412,5 +498,19 @@ const styles = StyleSheet.create({
   ocrLoadingText: {
     color: '#fff', fontSize: 16, fontWeight: '600',
     backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12,
+  },
+  ocrProcessingScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    paddingHorizontal: 24,
+  },
+  ocrProcessingText: {
+    color: '#1E293B',
+    fontSize: 16,
+    fontWeight: '700',
+    textAlign: 'center',
   },
 });
