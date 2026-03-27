@@ -1,5 +1,10 @@
+const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
 
-const apiKey = 'AIzaSyDFObelaqf_w21HKYhnSYMCzjpIJcyZcDY';
+if (!apiKey) {
+  console.error('Missing API key. Set EXPO_PUBLIC_GEMINI_API_KEY (or GEMINI_API_KEY) before running this script.');
+  process.exit(1);
+}
+
 const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
 
 fetch(url)

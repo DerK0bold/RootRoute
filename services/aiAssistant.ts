@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { GEMINI_API_KEY } from '../constants/config';
+import { GEMINI_API_KEY, HAS_GEMINI_API_KEY } from '../constants/config';
 
 /**
  * Basic structure for a chat message. 
@@ -38,7 +38,7 @@ export interface ProductContext {
  * These instructions define the AI's "personality". 
  * We want it to be helpful, transparent about food origins, and concise.
  */
-const SYSTEM_PROMPT = `Du bist ein intelligenter KI-Assistent für die App FoodTrace – eine App zur Transparenz in der Lebensmittel-Lieferkette.
+const SYSTEM_PROMPT = `Du bist ein intelligenter KI-Assistent fuer die App Root Route - eine App zur Transparenz in der Lebensmittel-Lieferkette.
 
 Deine Aufgaben:
 - Beantworte Fragen zu Lebensmitteln, Zutaten, Herkunft und Nachhaltigkeit
@@ -56,15 +56,68 @@ Wenn dir ein Produktkontext übergeben wird, beziehe dich konkret auf dieses Pro
 Wenn du keine Daten für die antwort findest kannst du googlen`;
 
 let client: GoogleGenerativeAI | null = null;
+const PRIMARY_MODEL = 'gemini-2.5-flash';
+const FALLBACK_MODEL = 'gemini-flash-latest';
 
 /**
  * Singleton pattern to ensure we only initialize the Gemini client once.
  */
 function getClient(): GoogleGenerativeAI {
+  if (!HAS_GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY_MISSING');
+  }
   if (!client) {
     client = new GoogleGenerativeAI(GEMINI_API_KEY);
   }
   return client;
+}
+
+function getFriendlyGeminiError(error: unknown): string {
+  const message =
+    typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message?: string }).message || '')
+      : String(error || '');
+
+  const lowerMessage = message.toLowerCase();
+  if (message.includes('GEMINI_API_KEY_MISSING')) {
+    return 'Kein Gemini API-Key gefunden. Setze EXPO_PUBLIC_GEMINI_API_KEY in deiner .env und starte Expo mit geleertem Cache neu.';
+  }
+  if (lowerMessage.includes('reported as leaked') || lowerMessage.includes('api key was reported as leaked')) {
+    return 'Dein Gemini API-Key wurde von Google gesperrt (als geleakt markiert). Erstelle einen neuen Key in Google AI Studio und setze ihn als EXPO_PUBLIC_GEMINI_API_KEY.';
+  }
+  if (lowerMessage.includes('[403')) {
+    return 'Gemini-Zugriff verweigert (403). Pruefe API-Key und Berechtigungen in Google AI Studio.';
+  }
+  if (lowerMessage.includes('[401')) {
+    return 'API-Key ungueltig (401). Bitte einen gueltigen Gemini Key verwenden.';
+  }
+  return `Fehler bei der KI-Anfrage: ${message || 'Unbekannter Fehler.'}`;
+}
+
+type ModelOptions = {
+  model: string;
+  systemInstruction?: string;
+  // Google Search is optional and may be rejected depending on API/model support.
+  tools?: Array<{ googleSearch: {} }>;
+};
+
+function getModelCandidates(systemInstruction?: string): ModelOptions[] {
+  return [
+    {
+      model: PRIMARY_MODEL,
+      systemInstruction,
+      // @ts-ignore - Supported by Gemini, but not always reflected in SDK typings
+      tools: [{ googleSearch: {} }],
+    },
+    {
+      model: FALLBACK_MODEL,
+      systemInstruction,
+      // @ts-ignore - Supported by Gemini, but not always reflected in SDK typings
+      tools: [{ googleSearch: {} }],
+    },
+    { model: PRIMARY_MODEL, systemInstruction },
+    { model: FALLBACK_MODEL, systemInstruction },
+  ];
 }
 
 /**
@@ -76,16 +129,12 @@ export async function sendMessage(
   userMessage: string,
   productContext?: ProductContext
 ): Promise<string> {
-  const genAI = getClient();
-  
-  // We're using the flash model for speed and cost-efficiency.
-  // It also supports Google Search grounding, which is great for staying up-to-date.
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash-latest',
-    systemInstruction: SYSTEM_PROMPT,
-    // @ts-ignore - Google Search is supported by Gemini 2.0 but specifically for better results
-    tools: [{ googleSearch: {} }],
-  });
+  let genAI: GoogleGenerativeAI;
+  try {
+    genAI = getClient();
+  } catch (error) {
+    return getFriendlyGeminiError(error);
+  }
 
   // Prepare a text block that describes the current product for the AI.
   let contextBlock = '';
@@ -106,17 +155,43 @@ export async function sendMessage(
     parts: [{ text: m.content }],
   }));
 
-  const chat = model.startChat({
-    history: formattedHistory,
-  });
-
   // If we have product context, we inject it into the prompt so the AI knows what we're talking about.
   const finalPrompt = productContext 
     ? `Hintergrund-Info zum aktuellen Produkt:\n${contextBlock}\n\nNutzerfrage: ${userMessage}`
     : userMessage;
 
-  const response = await chat.sendMessage(finalPrompt);
-  return response.response.text() || 'Keine Antwort erhalten.';
+  let lastError: unknown = null;
+  for (const options of getModelCandidates(SYSTEM_PROMPT)) {
+    try {
+      const model = genAI.getGenerativeModel(options);
+      const chat = model.startChat({ history: formattedHistory });
+      const response = await chat.sendMessage(finalPrompt);
+      return response.response.text() || 'Keine Antwort erhalten.';
+    } catch (error) {
+      lastError = error;
+      console.warn(`Gemini call failed for model ${options.model}. Retrying with next candidate.`, error);
+    }
+  }
+
+  return getFriendlyGeminiError(lastError ?? new Error('Gemini request failed for all model candidates.'));
+}
+
+async function generateContentWithFallback(
+  genAI: GoogleGenerativeAI,
+  prompt: string | unknown[]
+) {
+  let lastError: unknown = null;
+  for (const options of getModelCandidates()) {
+    try {
+      const model = genAI.getGenerativeModel(options);
+      return await model.generateContent(prompt);
+    } catch (error) {
+      lastError = error;
+      console.warn(`Gemini call failed for model ${options.model}. Retrying with next candidate.`, error);
+    }
+  }
+
+  throw lastError ?? new Error('Gemini request failed for all model candidates.');
 }
 
 export interface OcrProductResult {
@@ -140,7 +215,7 @@ export interface OcrProductResult {
 
 /**
  * Analysiert ein Produktbild (z.B. ein Foto der Packung) und sucht nach der Chargennummer.
- * Wir nutzen hier die multimodalen Fähigkeiten von Gemini, um die Charge und eventuell 
+ * Wir nutzen hier die multimodalen Fähigkeiten von Gemini, um die Charge und eventuell
  * eine plausible Lieferkette zu erkennen.
  */
 export async function analyzeProductImage(
@@ -149,13 +224,8 @@ export async function analyzeProductImage(
   productName?: string
 ): Promise<OcrProductResult> {
   const genAI = getClient();
-  const model = genAI.getGenerativeModel({ 
-    model: 'gemini-1.5-flash-latest',
-    // @ts-ignore - Google Search is supported but not fully typed
-    tools: [{ googleSearch: {} }],
-  });
 
-  const prompt = `Du siehst ein Foto eines Lebensmittelprodukts oder einer Charge. 
+  const prompt = `Du siehst ein Foto eines Lebensmittelprodukts oder einer Charge.
 Aktueller Kontext: Produkt "${productName || 'Unbekannt'}" von der Marke "${brand || 'Unbekannt'}".
 
 1. Extrahiere die Produktionsnummer / Charge (Lot, Batch, L, Charge). Nutze dein Wissen über das Format des Herstellers (${brand}), um sie korrekt zu finden.
@@ -179,7 +249,7 @@ Antworte NUR mit diesem JSON:
   }
 }`;
 
-  const result = await model.generateContent([
+  const result = await generateContentWithFallback(genAI, [
     { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
     { text: prompt },
   ]);
@@ -218,11 +288,6 @@ export async function checkProductSafety(
   ingredients?: string[]
 ): Promise<SafetyResult | null> {
   const genAI = getClient();
-  const model = genAI.getGenerativeModel({ 
-    model: 'gemini-1.5-flash-latest',
-    // @ts-ignore
-    tools: [{ googleSearch: {} }],
-  });
 
   const prompt = `Analysiere die Sicherheit dieses Lebensmittelprodukts:
 Produkt: ${productName}
@@ -244,7 +309,7 @@ Antworte NUR mit diesem JSON oder "null" falls alles okay ist:
 }`;
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await generateContentWithFallback(genAI, prompt);
     const text = result.response.text().trim();
     if (text.toLowerCase() === 'null') return null;
 

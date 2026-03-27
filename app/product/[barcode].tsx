@@ -103,6 +103,7 @@ export default function ProductScreen() {
   const [showBatchCamera, setShowBatchCamera] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [traceability, setTraceability] = useState<TraceabilityData | null>(null);
+  const [isMapInteracting, setIsMapInteracting] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
   const productName = product?.product_name_de || product?.product_name || 'Unbekanntes Produkt';
@@ -255,7 +256,11 @@ export default function ProductScreen() {
 
   return (
     <>
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        showsVerticalScrollIndicator={false}
+        scrollEnabled={!isMapInteracting}
+      >
         {/* RECALL WARNING */}
         {recall && (
           <View style={[styles.recallBanner, recall.severity === 'critical' ? styles.recallCritical : styles.recallWarning]}>
@@ -664,8 +669,14 @@ export default function ProductScreen() {
                       latitudeDelta: 100,
                       longitudeDelta: 100,
                     }}
-                    scrollEnabled={false}
-                    zoomEnabled={false}
+                    scrollEnabled
+                    zoomEnabled
+                    rotateEnabled
+                    pitchEnabled
+                    onTouchStart={() => setIsMapInteracting(true)}
+                    onTouchEnd={() => setIsMapInteracting(false)}
+                    onPanDrag={() => setIsMapInteracting(true)}
+                    onRegionChangeComplete={() => setIsMapInteracting(false)}
                   >
                     {traceability.journey.filter(s => s.coordinates).map((s, idx) => (
                       <Marker

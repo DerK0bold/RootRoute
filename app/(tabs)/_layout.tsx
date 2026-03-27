@@ -28,7 +28,7 @@ export default function TabLayout() {
         name="index"
         options={{
           title: 'Scanner',
-          headerTitle: 'FoodTrace 🥒',
+          headerTitle: 'Root Route',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="barcode-outline" size={size} color={color} />
           ),
@@ -68,7 +68,7 @@ export default function TabLayout() {
         name="community"
         options={{
           title: 'Community',
-          headerTitle: 'FoodTrace Community',
+          headerTitle: 'Root Route Community',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="people-outline" size={size} color={color} />
           ),

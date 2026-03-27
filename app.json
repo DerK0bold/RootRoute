@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "FoodTrace",
-    "slug": "foodtrace",
+    "name": "root route",
+    "slug": "root-route",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "foodtrace",
+    "scheme": "rootroute",
     "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -14,14 +14,14 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.hackathon.foodtrace"
+      "bundleIdentifier": "com.hackathon.rootroute"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0A1628",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
-      "package": "com.hackathon.foodtrace",
+      "package": "com.hackathon.rootroute",
       "permissions": ["CAMERA"],
       "softwareKeyboardLayoutMode": "resize"
     },
@@ -34,7 +34,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow FoodTrace to access your camera to scan barcodes."
+          "cameraPermission": "Allow root route to access your camera to scan barcodes."
         }
       ]
     ]

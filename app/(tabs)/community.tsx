@@ -88,7 +88,7 @@ export default function CommunityScreen() {
       {/* Header */}
       <LinearGradient colors={['#006EB7', '#004B87']} style={styles.header}>
         <Text style={styles.headerTitle}>Community & Rank</Text>
-        <Text style={styles.headerSubtitle}>Werden Sie ein FoodTrace-Experte!</Text>
+        <Text style={styles.headerSubtitle}>Werden Sie ein Root Route-Experte!</Text>
         
         <View style={styles.myStatsRow}>
           <View style={styles.myStat}>

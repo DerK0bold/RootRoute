@@ -54,7 +54,7 @@ export async function fetchProductByBarcode(barcode: string): Promise<ProductRes
     const BASE_URL = 'https://world.openfoodfacts.org/api/v2';
     const response = await fetch(
       `${BASE_URL}/product/${barcode}?fields=code,product_name,product_name_de,brands,categories,image_url,image_front_url,ingredients_text,ingredients_text_de,ingredients,origins,origins_tags,manufacturing_places,countries_tags,nutriments,nutriscore_grade,ecoscore_grade,labels_tags,packaging`,
-      { headers: { 'User-Agent': 'FoodTrace/1.0 (hackathon@badenbackt.ch)' } }
+      { headers: { 'User-Agent': 'RootRoute/1.0 (hackathon@badenbackt.ch)' } }
     );
 
     if (!response.ok) {
@@ -78,7 +78,7 @@ export async function searchProductsByName(name: string): Promise<ProductResult>
     const encoded = encodeURIComponent(name);
     const response = await fetch(
       `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encoded}&json=1&page_size=1&fields=code,product_name,product_name_de,brands,categories,image_url,image_front_url,nutriscore_grade,ecoscore_grade`,
-      { headers: { 'User-Agent': 'FoodTrace/1.0 (hackathon@badenbackt.ch)' } }
+      { headers: { 'User-Agent': 'RootRoute/1.0 (hackathon@badenbackt.ch)' } }
     );
     if (!response.ok) return { found: false, error: `HTTP ${response.status}` };
     const data = await response.json();

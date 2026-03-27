@@ -15,9 +15,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { sendMessage, ChatMessage, QUICK_SUGGESTIONS } from '../../services/aiAssistant';
-import { GEMINI_API_KEY } from '../../constants/config';
+import { HAS_GEMINI_API_KEY } from '../../constants/config';
 
-const API_KEY_SET = (GEMINI_API_KEY as string) !== 'DEIN_API_KEY_HIER';
+const API_KEY_SET = HAS_GEMINI_API_KEY;
 
 interface Message extends ChatMessage {
   id: string;
@@ -82,8 +82,8 @@ export default function AIScreen() {
     } catch (err: any) {
       console.error("Gemini Error: ", err);
       const errText =
-        err?.message?.includes('API key') || err?.status === 401
-          ? 'API-Key ungültig. Bitte trage einen gültigen Gemini API-Key in constants/config.ts ein.'
+        err?.message?.includes('API key') || err?.status === 401 || err?.status === 403
+          ? 'Gemini API-Key ungueltig oder gesperrt. Bitte setze EXPO_PUBLIC_GEMINI_API_KEY in .env.'
           : `Fehler: ${err?.message || 'Internetverbindung prüfen'}`;
       setMessages((prev) => [
         ...prev.filter((m) => m.id !== 'loading'),
@@ -134,14 +134,15 @@ export default function AIScreen() {
         <Text style={styles.noKeyEmoji}>🔑</Text>
         <Text style={styles.noKeyTitle}>API-Key benötigt</Text>
         <Text style={styles.noKeyText}>
-          Trage deinen Google Gemini API-Key in{'\n'}
-          <Text style={styles.noKeyCode}>constants/config.ts</Text>
-          {'\n'}ein, um den KI-Assistenten zu nutzen.
+          Setze deinen Google Gemini API-Key in{`\n`}
+          <Text style={styles.noKeyCode}>.env</Text>
+          {`\n`}als EXPO_PUBLIC_GEMINI_API_KEY.
         </Text>
         <View style={styles.noKeySteps}>
           <Text style={styles.noKeyStep}>1. Gehe zu aistudio.google.com</Text>
           <Text style={styles.noKeyStep}>2. Erstelle einen API-Key</Text>
-          <Text style={styles.noKeyStep}>3. Trage ihn in config.ts ein</Text>
+          <Text style={styles.noKeyStep}>3. Speichere ihn in .env als EXPO_PUBLIC_GEMINI_API_KEY</Text>
+          <Text style={styles.noKeyStep}>4. Starte Expo neu mit: npx expo start -c</Text>
         </View>
       </View>
     );
