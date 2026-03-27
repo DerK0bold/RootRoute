@@ -1,0 +1,953 @@
+import { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Image,
+  ActivityIndicator,
+  TouchableOpacity,
+  Alert,
+  Modal,
+} from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import { getTraceability, TraceabilityData, calculateTrustScore } from '../../services/traceabilityService';
+import { analyzeProductImage, checkProductSafety, SafetyResult } from '../../services/aiAssistant';
+import { addToPantry } from '../../services/pantryService';
+import {
+  fetchProductByBarcode,
+  parseIngredientsList,
+  getNutriScoreColor,
+  getEcoScoreColor,
+  OpenFoodFactsProduct,
+} from '../../services/openFoodFacts';
+import { addToHistory } from '../../services/scanHistory';
+import { findIngredientOrigin } from '../../constants/ingredientOrigins';
+import { checkProductForRecall, RecallEntry } from '../../services/recallDatabase';
+import { calculateCarbonFootprint, CarbonResult } from '../../services/carbonFootprint';
+import { predictShelfLife, ShelfLifeResult } from '../../services/shelfLife';
+import { recordProductScan } from '../../services/gamification';
+import { useRef } from 'react';
+
+/**
+ * This helper simulates a price breakdown based on the product category.
+ * In a real-world scenario, this data might come from the manufacturer 
+ * to show transparency about where the consumer's money goes.
+ */
+function getPriceBreakdown(categories: string): { label: string; pct: number; color: string }[] {
+  const cat = categories.toLowerCase();
+  if (cat.includes('chocolate') || cat.includes('confectionery') || cat.includes('süssware')) {
+    return [
+      { label: 'Rohstoffe & Bauern', pct: 18, color: '#4ADE80' },
+      { label: 'Verarbeitung', pct: 32, color: '#60A5FA' },
+      { label: 'Verpackung', pct: 9, color: '#F59E0B' },
+      { label: 'Transport', pct: 13, color: '#A78BFA' },
+      { label: 'Handel & Marketing', pct: 23, color: '#FB923C' },
+      { label: 'Steuern (MwSt.)', pct: 5, color: '#F87171' },
+    ];
+  }
+  if (cat.includes('dairy') || cat.includes('milch') || cat.includes('cheese') || cat.includes('käse')) {
+    return [
+      { label: 'Rohstoffe & Bauern', pct: 32, color: '#4ADE80' },
+      { label: 'Verarbeitung', pct: 24, color: '#60A5FA' },
+      { label: 'Verpackung', pct: 8, color: '#F59E0B' },
+      { label: 'Transport', pct: 10, color: '#A78BFA' },
+      { label: 'Handel & Marketing', pct: 21, color: '#FB923C' },
+      { label: 'Steuern (MwSt.)', pct: 5, color: '#F87171' },
+    ];
+  }
+  if (cat.includes('beverage') || cat.includes('getränk')) {
+    return [
+      { label: 'Rohstoffe & Bauern', pct: 12, color: '#4ADE80' },
+      { label: 'Verarbeitung', pct: 20, color: '#60A5FA' },
+      { label: 'Verpackung', pct: 18, color: '#F59E0B' },
+      { label: 'Transport', pct: 16, color: '#A78BFA' },
+      { label: 'Handel & Marketing', pct: 29, color: '#FB923C' },
+      { label: 'Steuern (MwSt.)', pct: 5, color: '#F87171' },
+    ];
+  }
+  return [
+    { label: 'Rohstoffe & Bauern', pct: 22, color: '#4ADE80' },
+    { label: 'Verarbeitung', pct: 28, color: '#60A5FA' },
+    { label: 'Verpackung', pct: 8, color: '#F59E0B' },
+    { label: 'Transport', pct: 13, color: '#A78BFA' },
+    { label: 'Handel & Marketing', pct: 24, color: '#FB923C' },
+    { label: 'Steuern (MwSt.)', pct: 5, color: '#F87171' },
+  ];
+}
+
+export default function ProductScreen() {
+  const { barcode: id, isLot, ean } = useLocalSearchParams<{ barcode: string; isLot?: string; ean?: string }>();
+  const barcode = isLot === 'true' ? ean || id : id;
+  const lotNumber = isLot === 'true' ? id : undefined;
+  const router = useRouter();
+  // --- State Management ---
+  // Product data from Open Food Facts
+  const [product, setProduct] = useState<OpenFoodFactsProduct | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showAllIngredients, setShowAllIngredients] = useState(false);
+  
+  // Safety & Sustainability data
+  const [recall, setRecall] = useState<RecallEntry | null>(null);
+  const [carbon, setCarbon] = useState<CarbonResult | null>(null);
+  const [shelfLife, setShelfLife] = useState<ShelfLifeResult | null>(null);
+  const [aiSafety, setAiSafety] = useState<SafetyResult | null>(null);
+
+  // Batch-specific traceability state
+  const [permission, requestPermission] = useCameraPermissions();
+  const [showBatchCamera, setShowBatchCamera] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [traceability, setTraceability] = useState<TraceabilityData | null>(null);
+  const cameraRef = useRef<CameraView>(null);
+
+  const productName = product?.product_name_de || product?.product_name || 'Unbekanntes Produkt';
+
+  useEffect(() => {
+    if (barcode) loadProduct(barcode);
+    if (lotNumber) {
+      const data = getTraceability(lotNumber);
+      setTraceability(data);
+    }
+  }, [barcode, lotNumber]);
+
+  /**
+   * Captures a photo of the product batch/lot code and tries to recognize it.
+   * For the hackathon, we're using a mix of simulated OCR and predefined mock data.
+   */
+  const handleBatchCapture = async () => {
+    if (!cameraRef.current || ocrLoading) return;
+
+    try {
+      setOcrLoading(true);
+      const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.5 });
+      if (!photo?.base64) return;
+
+      // Mocking OCR to save API costs as requested
+      // In a real app, this would use analyzeProductImage
+      // For the demo, we simulate finding a lot number if the brand is El Tony
+      let detectedLot: string | null = 'L-TONY-24-001'; 
+      const lowerName = productName.toLowerCase();
+      if (lowerName.includes('ginger') || lowerName.includes('ingwer')) {
+        detectedLot = 'L2590069';
+      } else if (lowerName.includes('mint') || lowerName.includes('minze')) {
+        detectedLot = 'L2590059';
+      }
+
+      const mockData = getTraceability(detectedLot);
+      if (mockData) {
+        setTraceability(mockData);
+        setShowBatchCamera(false);
+      } else {
+        Alert.alert('Nicht erkannt', 'Keine lokale Charge für dieses Produkt gefunden.');
+      }
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Fehler', 'Bei der Analyse des Fotos ist ein Fehler aufgetreten.');
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
+  /**
+   * Main function to fetch all relevant product data.
+   * We pull data from Open Food Facts, then trigger our local sustainability 
+   * and safety checks.
+   */
+  const loadProduct = async (code: string) => {
+    setLoading(true);
+    setError(null);
+
+    const result = await fetchProductByBarcode(code);
+
+    if (result.found && result.product) {
+      const p = result.product;
+      setProduct(p);
+      await addToHistory(p);
+
+      // Recall check
+      const foundRecall = checkProductForRecall(code, p.brands, p.product_name_de || p.product_name);
+      setRecall(foundRecall);
+
+      // Carbon footprint
+      const ingredients = parseIngredientsList(p);
+      const co2 = calculateCarbonFootprint(ingredients);
+      setCarbon(co2);
+
+      // Shelf life
+      const shelf = predictShelfLife(p);
+      setShelfLife(shelf);
+
+      // AI Safety Check (Async, non-blocking for basic UI)
+      checkProductSafety(p.product_name_de || p.product_name || 'Produkt', p.brands, ingredients)
+        .then(setAiSafety)
+        .catch(err => console.error('AI Safety background check failed', err));
+
+      // Gamification
+      const ingredientsWithOrigins = ingredients.map((ing) => ({
+        origin: findIngredientOrigin(ing),
+      }));
+      const uniqueCountries = new Set<string>();
+      ingredientsWithOrigins.forEach(({ origin }) => {
+        if (origin) origin.countries.slice(0, 1).forEach((c) => uniqueCountries.add(c.name));
+      });
+      const newAchievements = await recordProductScan(
+        p.nutriscore_grade,
+        p.ecoscore_grade,
+        uniqueCountries.size
+      );
+      if (newAchievements.length > 0) {
+        const names = newAchievements.map((a) => `${a.emoji} ${a.title}`).join('\n');
+        Alert.alert('🏆 Achievement freigeschaltet!', names);
+      }
+    } else {
+      setError(result.error || 'Produkt nicht gefunden');
+    }
+    setLoading(false);
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color="#006EB7" />
+        <Text style={styles.loadingText}>Suche in Open Food Facts...</Text>
+        <Text style={styles.loadingSubtext}>Barcode: {barcode}</Text>
+      </View>
+    );
+  }
+
+  if (error || !product) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.errorIcon}>😕</Text>
+        <Text style={styles.errorTitle}>Produkt nicht gefunden</Text>
+        <Text style={styles.errorText}>{error}</Text>
+        <Text style={styles.errorBarcode}>Barcode: {barcode}</Text>
+        <TouchableOpacity style={styles.retryBtn} onPress={() => loadProduct(barcode!)}>
+          <Text style={styles.retryText}>Erneut versuchen</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const ingredients = parseIngredientsList(product);
+  const visibleIngredients = showAllIngredients ? ingredients : ingredients.slice(0, 8);
+
+  const ingredientsWithOrigins = ingredients.map((ing) => ({
+    name: ing,
+    origin: findIngredientOrigin(ing),
+  }));
+
+  const uniqueCountries = new Set<string>();
+  ingredientsWithOrigins.forEach(({ origin }) => {
+    if (origin) origin.countries.slice(0, 1).forEach((c) => uniqueCountries.add(c.name));
+  });
+
+  const originTags = product.origins_tags?.map((tag) =>
+    tag.replace('en:', '').replace(/-/g, ' ')
+  ) || [];
+
+  const priceBreakdown = getPriceBreakdown(product.categories || '');
+
+  return (
+    <>
+      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+        {/* RECALL WARNING */}
+        {recall && (
+          <View style={[styles.recallBanner, recall.severity === 'critical' ? styles.recallCritical : styles.recallWarning]}>
+            <View style={styles.recallIconRow}>
+              <Text style={styles.recallIcon}>{recall.severity === 'critical' ? '🚨' : '⚠️'}</Text>
+              <View style={styles.recallTextBlock}>
+                <Text style={styles.recallTitle}>
+                  {recall.severity === 'critical' ? 'RÜCKRUF – Nicht verzehren!' : 'WARNUNG'}
+                </Text>
+                <Text style={styles.recallId}>Ref: {recall.id} · {recall.date}</Text>
+              </View>
+            </View>
+            <Text style={styles.recallReason}>{recall.reason}</Text>
+            <View style={styles.recallActionBox}>
+              <Ionicons name="information-circle" size={16} color="#fff" />
+              <Text style={styles.recallAction}>{recall.action}</Text>
+            </View>
+            <Text style={styles.recallAuthority}>Behörde: {recall.authority}</Text>
+          </View>
+        )}
+
+        {/* AI SAFETY BANNER */}
+        {aiSafety && aiSafety.hasWarning && (
+          <View style={[styles.recallBanner, aiSafety.severity === 'critical' ? styles.recallCritical : styles.recallWarning, { borderColor: aiSafety.severity === 'critical' ? '#EF4444' : '#F59E0B' }]}>
+            <View style={styles.recallIconRow}>
+              <Text style={styles.recallIcon}>{aiSafety.type === 'allergy' ? '🥦' : '🛡️'}</Text>
+              <View style={styles.recallTextBlock}>
+                <Text style={styles.recallTitle}>AI SICHERHEITS-CHECK</Text>
+                <Text style={styles.recallId}>{aiSafety.title}</Text>
+              </View>
+            </View>
+            <Text style={styles.recallReason}>{aiSafety.message}</Text>
+            <View style={styles.aiBadgeRow}>
+              <Ionicons name="sparkles" size={12} color={aiSafety.severity === 'critical' ? '#EF4444' : '#F59E0B'} />
+              <Text style={[styles.aiBadgeText, { color: aiSafety.severity === 'critical' ? '#EF4444' : '#F59E0B' }]}>
+                Live-Analyse durch Gemini AI
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Product Header */}
+        <LinearGradient colors={['#FFFFFF', '#F8FAFC']} style={styles.header}>
+          {product.image_front_url ? (
+            <Image source={{ uri: product.image_front_url }} style={styles.productImage} resizeMode="contain" />
+          ) : (
+            <View style={styles.imagePlaceholder}>
+              <Text style={styles.imagePlaceholderText}>📦</Text>
+            </View>
+          )}
+          <Text style={styles.productName}>{productName}</Text>
+          {product.brands && <Text style={styles.brand}>{product.brands}</Text>}
+          {lotNumber ? (
+            <View style={styles.lotBadge}>
+              <Text style={styles.lotLabel}>Charge: {lotNumber}</Text>
+            </View>
+          ) : (
+            <Text style={styles.barcode}>Barcode: {barcode}</Text>
+          )}
+        </LinearGradient>
+
+        {/* Scores Row */}
+        <View style={styles.scoresRow}>
+          {product.nutriscore_grade && (
+            <View style={[styles.scoreCard, { borderColor: getNutriScoreColor(product.nutriscore_grade) }]}>
+              <Text style={[styles.scoreGrade, { color: getNutriScoreColor(product.nutriscore_grade) }]}>
+                {product.nutriscore_grade.toUpperCase()}
+              </Text>
+              <Text style={styles.scoreLabel}>Nutri-Score</Text>
+            </View>
+          )}
+          {traceability && product.ecoscore_grade && (
+            <View style={[styles.scoreCard, { borderColor: getEcoScoreColor(product.ecoscore_grade) }]}>
+              <Text style={[styles.scoreGrade, { color: getEcoScoreColor(product.ecoscore_grade) }]}>
+                {product.ecoscore_grade.toUpperCase()}
+              </Text>
+              <Text style={styles.scoreLabel}>Eco-Score</Text>
+            </View>
+          )}
+          {traceability && carbon && (
+            <View style={[styles.scoreCard, { borderColor: carbon.gradeColor }]}>
+              <Text style={[styles.scoreGrade, { color: carbon.gradeColor }]}>
+                {carbon.grade.toUpperCase()}
+              </Text>
+              <Text style={styles.scoreLabel}>CO₂-Score</Text>
+            </View>
+          )}
+          <View style={[styles.scoreCard, { borderColor: '#006EB7' }]}>
+            <Text style={[styles.scoreGrade, { color: '#006EB7' }]}>
+              {calculateTrustScore(traceability, priceBreakdown.length > 0)}%
+            </Text>
+            <Text style={styles.scoreLabel}>Vertrauen</Text>
+          </View>
+        </View>
+
+        {/* AI Assistant Button */}
+        {product && (
+          <TouchableOpacity
+            style={styles.aiButtonContainer}
+            onPress={() => {
+              router.push({
+                pathname: '/productAi/[barcode]',
+                params: {
+                  barcode: id,
+                  isLot: isLot,
+                  ean: ean,
+                  name: productName,
+                  brand: product.brands,
+                  nutriscore: product.nutriscore_grade,
+                  ecoscore: product.ecoscore_grade,
+                  carbon: carbon?.totalCO2?.toString(),
+                  carbonGrade: carbon?.grade,
+                  origins: JSON.stringify(product.origins_tags || []),
+                  manufacturing: product.manufacturing_places
+                }
+              });
+            }}
+          >
+            <LinearGradient colors={['#006EB7', '#004B87']} style={styles.aiButton}>
+              <Ionicons name="sparkles" size={20} color="#fff" />
+              <Text style={styles.aiButtonText}>KI-Experten fragen</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        )}
+
+        {/* Add to Pantry Button */}
+        {product && (
+          <TouchableOpacity
+            style={styles.pantryButtonContainer}
+            onPress={async () => {
+              try {
+                await addToPantry(
+                  barcode!,
+                  productName,
+                  product.brands,
+                  product.image_front_url,
+                  shelfLife?.days || 7
+                );
+                Alert.alert('📦 Erfolg', 'Produkt wurde deinem Vorratsschrank hinzugefügt.');
+              } catch (e) {
+                Alert.alert('Fehler', 'Konnte Produkt nicht hinzufügen.');
+              }
+            }}
+          >
+            <View style={styles.pantryButton}>
+              <Ionicons name="archive-outline" size={20} color="#006EB7" />
+              <Text style={styles.pantryButtonText}>In Vorratsschrank legen</Text>
+            </View>
+          </TouchableOpacity>
+        )}
+
+        {/* Origin Section */}
+        {traceability && originTags.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📍 Produktherkunft</Text>
+            <View style={styles.originTags}>
+              {originTags.map((tag, i) => (
+                <View key={i} style={styles.originTag}>
+                  <Text style={styles.originTagText}>{tag}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {traceability && product.manufacturing_places && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>🏭 Hergestellt in</Text>
+            <View style={styles.infoBox}>
+              <Ionicons name="business-outline" size={18} color="#006EB7" />
+              <Text style={styles.infoText}>{product.manufacturing_places}</Text>
+            </View>
+          </View>
+        )}
+
+        {traceability && carbon && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>♻️ CO₂-Fussabdruck</Text>
+            <View style={[styles.carbonCard, { borderColor: carbon.gradeColor }]}>
+              <View style={styles.carbonHeader}>
+                <View>
+                  <Text style={[styles.carbonTotal, { color: carbon.gradeColor }]}>
+                    {carbon.totalCO2} g CO₂
+                  </Text>
+                  <Text style={styles.carbonPer}>pro 100g Produkt</Text>
+                </View>
+                <View style={[styles.carbonGradeBadge, { backgroundColor: carbon.gradeColor + '22', borderColor: carbon.gradeColor }]}>
+                  <Text style={[styles.carbonGradeText, { color: carbon.gradeColor }]}>
+                    {carbon.grade.toUpperCase()}
+                  </Text>
+                  <Text style={[styles.carbonGradeLabel, { color: carbon.gradeColor }]}>
+                    {carbon.gradeLabel}
+                  </Text>
+                </View>
+              </View>
+              {carbon.topContributors.length > 0 && (
+                <View style={styles.carbonContributors}>
+                  <Text style={styles.carbonContribTitle}>Grösste CO₂-Quellen:</Text>
+                  {carbon.topContributors.map((c, i) => (
+                    <View key={i} style={styles.carbonContribRow}>
+                      <Text style={styles.carbonContribName}>{c.name}</Text>
+                      <Text style={styles.carbonContribVal}>{c.co2}g</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {traceability && ingredients.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>🌍 Herkunft der Zutaten</Text>
+            <Text style={styles.sectionSubtitle}>Woher kommen die einzelnen Zutaten?</Text>
+
+            {uniqueCountries.size > 0 && (
+              <View style={styles.worldSummary}>
+                <Text style={styles.worldSummaryText}>
+                  Dieses Produkt enthält Zutaten aus mindestens{' '}
+                  <Text style={styles.highlight}>{uniqueCountries.size} Ländern</Text>
+                </Text>
+              </View>
+            )}
+
+            {visibleIngredients.map((ingredient, index) => {
+              const origin = findIngredientOrigin(ingredient);
+              return (
+                <View key={index} style={styles.ingredientCard}>
+                  <View style={styles.ingredientHeader}>
+                    <Text style={styles.ingredientName}>{ingredient}</Text>
+                    {origin && <Text style={styles.ingredientNameDE}>{origin.nameDE}</Text>}
+                  </View>
+                  {origin ? (
+                    <>
+                      <Text style={styles.originDescription}>{origin.description}</Text>
+                      <View style={styles.countryList}>
+                        {origin.countries.slice(0, 3).map((country, ci) => (
+                          <View key={ci} style={styles.countryRow}>
+                            <Text style={styles.countryFlag}>{country.flag}</Text>
+                            <View style={styles.countryInfo}>
+                              <Text style={styles.countryName}>{country.name}</Text>
+                              <Text style={styles.countryRegion}>{country.region}</Text>
+                            </View>
+                            <View style={styles.percentageBar}>
+                              <View style={[styles.percentageFill, { width: `${country.percentage}%`, backgroundColor: getBarColor(ci) }]} />
+                            </View>
+                            <Text style={styles.percentageText}>{country.percentage}%</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </>
+                  ) : (
+                    <View style={styles.noOriginRow}>
+                      <Ionicons name="help-circle-outline" size={16} color="#6B7280" />
+                      <Text style={styles.noOriginText}>Herkunft nicht bekannt</Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+
+            {ingredients.length > 8 && (
+              <TouchableOpacity style={styles.showMoreBtn} onPress={() => setShowAllIngredients(!showAllIngredients)}>
+                <Text style={styles.showMoreText}>
+                  {showAllIngredients ? 'Weniger anzeigen' : `${ingredients.length - 8} weitere Zutaten anzeigen`}
+                </Text>
+                <Ionicons name={showAllIngredients ? 'chevron-up' : 'chevron-down'} size={16} color="#006EB7" />
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {traceability && shelfLife && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>⏱️ Haltbarkeit & Lagerung</Text>
+            <View style={[styles.shelfCard, { borderColor: shelfLife.color }]}>
+              <View style={styles.shelfRow}>
+                <Text style={styles.shelfIcon}>{shelfLife.icon}</Text>
+                <View style={styles.shelfInfo}>
+                  <Text style={[styles.shelfDays, { color: shelfLife.color }]}>
+                    {shelfLife.label}
+                  </Text>
+                  <Text style={styles.shelfLabel}>Geschätzte Haltbarkeit (ungeöffnet)</Text>
+                </View>
+              </View>
+              <View style={styles.shelfTipRow}>
+                <Ionicons name="bulb-outline" size={15} color="#F59E0B" />
+                <Text style={styles.shelfTip}>{shelfLife.storageTip}</Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Nutrition */}
+        {product.nutriments && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📊 Nährwerte pro 100g</Text>
+            <View style={styles.nutritionGrid}>
+              {(() => {
+                const kcal = product.nutriments?.['energy-kcal_100g'] || (product.nutriments?.energy_100g ? product.nutriments.energy_100g / 4.184 : 0);
+                const kj = product.nutriments?.['energy-kj_100g'] || product.nutriments?.energy_100g || 0;
+                if (!kcal && !kj) return null;
+                return <NutritionItem label="Energie" value={`${kcal.toFixed(0)} / ${kj.toFixed(0)}`} unit=" kcal/kJ" />;
+              })()}
+              <NutritionItem label="Fett" value={product.nutriments.fat_100g?.toFixed(1)} unit="g" />
+              <NutritionItem label="Zucker" value={product.nutriments.sugars_100g?.toFixed(1)} unit="g" />
+              <NutritionItem label="Protein" value={product.nutriments.proteins_100g?.toFixed(1)} unit="g" />
+              <NutritionItem label="Salz" value={product.nutriments.salt_100g?.toFixed(2)} unit="g" />
+              <NutritionItem label="Ballaststoffe" value={product.nutriments.fiber_100g?.toFixed(1)} unit="g" />
+            </View>
+          </View>
+        )}
+
+        {traceability && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>💰 Preisaufschlüsselung</Text>
+            <Text style={styles.sectionSubtitle}>So verteilt sich der Preis entlang der Lieferkette (simuliert)</Text>
+            <View style={styles.priceCard}>
+              <View style={styles.priceBarContainer}>
+                {priceBreakdown.map((item, i) => (
+                  <View
+                    key={i}
+                    style={[styles.priceBarSegment, { width: `${item.pct}%`, backgroundColor: item.color }]}
+                  />
+                ))}
+              </View>
+              {priceBreakdown.map((item, i) => (
+                <View key={i} style={styles.priceLegendRow}>
+                  <View style={[styles.priceLegendDot, { backgroundColor: item.color }]} />
+                  <Text style={styles.priceLegendLabel}>{item.label}</Text>
+                  <Text style={[styles.priceLegendPct, { color: item.color }]}>{item.pct}%</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* 
+          Product Journey (Traceability): 
+          This is the highlight of the app – showing the actual steps the product took.
+        */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>🗺️ Produkt-Reise (Traceability)</Text>
+          {traceability ? (
+            <View style={styles.journeyCard}>
+              <View style={styles.journeyHeader}>
+                <View>
+                  <Text style={styles.journeyLotTitle}>Charge / Batch</Text>
+                  <Text style={styles.journeyLotValue}>{traceability.lotNumber}</Text>
+                </View>
+                <View style={styles.verifiedBadge}>
+                  <Ionicons name="checkmark-sharp" size={14} color="#059669" />
+                  <Text style={styles.verifiedText}>Verifiziert</Text>
+                </View>
+              </View>
+              
+              <View style={styles.timeline}>
+                {traceability.journey.map((step, i) => (
+                  <View key={i} style={styles.timelineItem}>
+                    <View style={styles.timelineLeft}>
+                      <View style={styles.timelinePoint}>
+                        <Text style={styles.timelineIcon}>{step.icon}</Text>
+                      </View>
+                      {i < traceability.journey.length - 1 && <View style={styles.timelineLine} />}
+                    </View>
+                    <View style={styles.timelineRight}>
+                      <Text style={styles.timelineEvent}>{step.event}</Text>
+                      <Text style={styles.timelineLocation}>{step.location}</Text>
+                      <Text style={styles.timelineStepDate}>{step.date}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+
+              {/* Crowd Interaction */}
+              <View style={styles.crowdInteraction}>
+                <TouchableOpacity 
+                  style={styles.confirmBtn} 
+                  onPress={() => {
+                    Alert.alert('✅ Bestätigt', 'Vielen Dank! Du hast geholfen, die Datenqualität zu verbessern (+10 Punkte).');
+                  }}
+                >
+                  <Ionicons name="checkmark-circle-outline" size={18} color="#059669" />
+                  <Text style={styles.confirmText}>Daten bestätigen</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.reportBtn}
+                  onPress={() => {
+                    Alert.alert('⚠️ Meldung', 'Vielen Dank für den Hinweis. Wir werden die Daten für diese Charge (L-TONY-24-001) prüfen.');
+                  }}
+                >
+                  <Ionicons name="alert-circle-outline" size={18} color="#EF4444" />
+                  <Text style={styles.reportText}>Problem melden</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Journey Map */}
+              {traceability.journey.some(s => s.coordinates) && (
+                <View style={styles.mapWrapper}>
+                  <MapView
+                    style={styles.map}
+                    provider={PROVIDER_GOOGLE}
+                    initialRegion={{
+                      latitude: 30,
+                      longitude: 0,
+                      latitudeDelta: 100,
+                      longitudeDelta: 100,
+                    }}
+                    scrollEnabled={false}
+                    zoomEnabled={false}
+                  >
+                    {traceability.journey.filter(s => s.coordinates).map((s, idx) => (
+                      <Marker
+                        key={idx}
+                        coordinate={s.coordinates!}
+                        title={s.event}
+                        description={s.location}
+                      >
+                        <View style={styles.mapMarker}>
+                          <Text style={styles.mapMarkerIcon}>{s.icon}</Text>
+                        </View>
+                      </Marker>
+                    ))}
+                    <Polyline
+                      coordinates={traceability.journey.filter(s => s.coordinates).map(s => s.coordinates!)}
+                      strokeColor="#7C3AED"
+                      strokeWidth={3}
+                      lineDashPattern={[5, 5]}
+                    />
+                  </MapView>
+                </View>
+              )}
+              
+              <TouchableOpacity style={styles.rescanBatchBtn} onPress={() => setShowBatchCamera(true)}>
+                <Text style={styles.rescanBatchText}>Andere Charge prüfen</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.noJourneyCard}>
+              <View style={styles.noJourneyIconBox}>
+                <Ionicons name="location" size={32} color="#94A3B8" />
+              </View>
+              <Text style={styles.noJourneyTitle}>Genaue Herkunft unbekannt</Text>
+              <Text style={styles.noJourneyText}>Scanne die Batch-Nummer (oft am Boden oder Rand), um die exakte Reise dieses Produkts zu sehen.</Text>
+              <TouchableOpacity style={styles.batchScanBtn} onPress={() => setShowBatchCamera(true)}>
+                <LinearGradient colors={['#7C3AED', '#6D28D9']} style={styles.batchScanGradient}>
+                  <Ionicons name="camera" size={20} color="#fff" />
+                  <Text style={styles.batchScanText}>Batch-Nummer scannen</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+
+      <Modal animationType="slide" transparent={false} visible={showBatchCamera}>
+        <View style={styles.cameraContainer}>
+          <CameraView style={styles.camera} ref={cameraRef} />
+          <View style={styles.cameraOverlay}>
+            <View style={styles.scanTarget}>
+              <View style={[styles.scanCorner, styles.topLeft]} />
+              <View style={[styles.scanCorner, styles.topRight]} />
+              <View style={[styles.scanCorner, styles.bottomLeft]} />
+              <View style={[styles.scanCorner, styles.bottomRight]} />
+            </View>
+            <Text style={styles.scanInstruction}>Vorderseite oder Boden mit Batch/Lot-Code scannen</Text>
+            
+            <View style={styles.cameraButtons}>
+              <TouchableOpacity style={styles.closeCamera} onPress={() => setShowBatchCamera(false)}>
+                <Ionicons name="close-circle" size={44} color="#fff" />
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.captureBtn} onPress={handleBatchCapture} disabled={ocrLoading}>
+                {ocrLoading ? (
+                  <ActivityIndicator size="large" color="#fff" />
+                ) : (
+                  <View style={styles.captureBtnOuter}>
+                    <View style={styles.captureBtnInner} />
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+function NutritionItem({ label, value, unit }: { label: string; value?: string; unit: string }) {
+  if (!value) return null;
+  return (
+    <View style={styles.nutritionItem}>
+      <Text style={styles.nutritionValue}>
+        {value}<Text style={styles.nutritionUnit}>{unit}</Text>
+      </Text>
+      <Text style={styles.nutritionLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function getBarColor(index: number): string {
+  return ['#4ADE80', '#60A5FA', '#F59E0B'][index % 3];
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#F8FAFC' },
+  loadingText: { color: '#64748B', fontSize: 16, marginTop: 16 },
+  loadingSubtext: { color: '#94A3B8', fontSize: 13, marginTop: 6 },
+  errorIcon: { fontSize: 64, marginBottom: 16 },
+  errorTitle: { color: '#1E293B', fontSize: 22, fontWeight: '700', marginBottom: 8 },
+  errorText: { color: '#64748B', fontSize: 15, textAlign: 'center', marginBottom: 8 },
+  errorBarcode: { color: '#94A3B8', fontSize: 13 },
+  retryBtn: { marginTop: 20, backgroundColor: '#006EB7', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 },
+  retryText: { color: '#fff', fontWeight: '600' },
+
+  // Recall Banner
+  recallBanner: { margin: 12, borderRadius: 14, padding: 16, borderWidth: 2 },
+  recallCritical: { backgroundColor: '#FEF2F2', borderColor: '#EF4444' },
+  recallWarning: { backgroundColor: '#FFFBEB', borderColor: '#F59E0B' },
+  recallIconRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 10 },
+  recallIcon: { fontSize: 28 },
+  recallTextBlock: { flex: 1 },
+  recallTitle: { color: '#1E293B', fontSize: 16, fontWeight: '900' },
+  recallId: { color: '#64748B', fontSize: 11, marginTop: 2 },
+  recallReason: { color: '#475569', fontSize: 13, lineHeight: 18, marginBottom: 10 },
+  recallActionBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: 'rgba(0,0,0,0.05)', borderRadius: 8, padding: 10, marginBottom: 8 },
+  recallAction: { color: '#1E293B', fontSize: 13, flex: 1, lineHeight: 18 },
+  recallAuthority: { color: '#64748B', fontSize: 11 },
+  aiBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8 },
+  aiBadgeText: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
+
+  // Header
+  header: { padding: 24, alignItems: 'center', paddingTop: 32, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  productImage: { width: 160, height: 160, marginBottom: 16, borderRadius: 12 },
+  imagePlaceholder: { width: 160, height: 160, backgroundColor: '#F1F5F9', borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginBottom: 16, borderWidth: 1, borderColor: '#E2E8F0' },
+  imagePlaceholderText: { fontSize: 64 },
+  productName: { fontSize: 20, fontWeight: '800', color: '#1E293B', textAlign: 'center', marginBottom: 4 },
+  brand: { fontSize: 14, color: '#64748B', marginBottom: 4 },
+  barcode: { fontSize: 12, color: '#94A3B8' },
+  lotBadge: { backgroundColor: '#7C3AED', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, marginTop: 4 },
+  lotLabel: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+
+  // Journey Section
+  journeyCard: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#DDD6FE', shadowColor: '#7C3AED', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3 },
+  journeyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, borderBottomWidth: 1, borderBottomColor: '#F3F4F6', paddingBottom: 12 },
+  journeyLotTitle: { fontSize: 11, color: '#6B7280', textTransform: 'uppercase', fontWeight: '600' },
+  journeyLotValue: { fontSize: 16, fontWeight: '800', color: '#1F2937' },
+  verifiedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#ECFDF5', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  verifiedText: { color: '#059669', fontSize: 12, fontWeight: '700' },
+  
+  timeline: { paddingLeft: 8 },
+  timelineItem: { flexDirection: 'row', minHeight: 70 },
+  timelineLeft: { width: 40, alignItems: 'center' },
+  timelinePoint: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center', zIndex: 1, borderWidth: 2, borderColor: '#DDD6FE' },
+  timelineIcon: { fontSize: 16 },
+  timelineLine: { position: 'absolute', top: 32, bottom: 0, width: 2, backgroundColor: '#DDD6FE' },
+  timelineRight: { flex: 1, paddingLeft: 12, paddingBottom: 20 },
+  timelineEvent: { fontSize: 15, fontWeight: '700', color: '#1F2937' },
+  timelineLocation: { fontSize: 13, color: '#4B5563', marginTop: 2 },
+  timelineStepDate: { fontSize: 11, color: '#9CA3AF', marginTop: 4 },
+  rescanBatchBtn: { alignSelf: 'center', marginTop: 10, padding: 8 },
+  rescanBatchText: { color: '#7C3AED', fontSize: 13, fontWeight: '600', textDecorationLine: 'underline' },
+
+  noJourneyCard: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 24, alignItems: 'center', borderStyle: 'dotted', borderWidth: 2, borderColor: '#CBD5E1' },
+  noJourneyIconBox: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
+  noJourneyTitle: { fontSize: 16, fontWeight: '700', color: '#475569', marginBottom: 8 },
+  noJourneyText: { fontSize: 13, color: '#64748B', textAlign: 'center', lineHeight: 20, marginBottom: 20 },
+  batchScanBtn: { shadowColor: '#7C3AED', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  batchScanGradient: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 },
+  batchScanText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+
+  // Camera
+  cameraContainer: { flex: 1, backgroundColor: '#000' },
+  camera: { flex: 1 },
+  cameraOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
+  scanTarget: { width: 280, height: 180, position: 'relative' },
+  scanCorner: { position: 'absolute', width: 40, height: 40, borderColor: '#7C3AED', borderWidth: 4 },
+  topLeft: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
+  topRight: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
+  bottomLeft: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0 },
+  bottomRight: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
+  scanInstruction: { color: '#fff', fontSize: 15, fontWeight: '600', textAlign: 'center', marginTop: 40, paddingHorizontal: 40, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 4 },
+  cameraButtons: { position: 'absolute', bottom: 60, width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' },
+  closeCamera: { padding: 10 },
+  captureBtn: { width: 80, height: 80, alignItems: 'center', justifyContent: 'center' },
+  captureBtnOuter: { width: 70, height: 70, borderRadius: 35, borderWidth: 4, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  captureBtnInner: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#fff' },
+
+  // Scores
+  scoresRow: { flexDirection: 'row', marginHorizontal: 16, marginTop: 16, gap: 10, flexWrap: 'wrap' },
+  scoreCard: { backgroundColor: '#FFFFFF', borderRadius: 12, padding: 14, alignItems: 'center', borderWidth: 2, minWidth: 90, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  scoreGrade: { fontSize: 28, fontWeight: '900' },
+  scoreLabel: { color: '#64748B', fontSize: 11, marginTop: 2 },
+
+  aiButtonContainer: { marginHorizontal: 16, marginTop: 20, shadowColor: '#006EB7', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 3 },
+  aiButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 14, borderRadius: 14 },
+  aiButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+
+  // Sections
+  section: { marginHorizontal: 16, marginTop: 24 },
+  sectionTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 12 },
+  sectionSubtitle: { color: '#64748B', fontSize: 13, marginTop: -8, marginBottom: 14 },
+
+  originTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  originTag: { backgroundColor: '#E0F2FE', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 1, borderColor: '#BAE6FD' },
+  originTagText: { color: '#006EB7', fontSize: 13, fontWeight: '600' },
+
+  infoBox: { backgroundColor: '#FFFFFF', borderRadius: 10, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  infoText: { color: '#334155', fontSize: 14, flex: 1 },
+
+  // Carbon
+  carbonCard: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, borderWidth: 1.5, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  carbonHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  carbonTotal: { fontSize: 26, fontWeight: '900' },
+  carbonPer: { color: '#64748B', fontSize: 12, marginTop: 2 },
+  carbonGradeBadge: { borderRadius: 10, padding: 10, alignItems: 'center', borderWidth: 1.5, minWidth: 80 },
+  carbonGradeText: { fontSize: 22, fontWeight: '900' },
+  carbonGradeLabel: { fontSize: 11, fontWeight: '600', textAlign: 'center', marginTop: 2 },
+  carbonContributors: { borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 12 },
+  carbonContribTitle: { color: '#64748B', fontSize: 12, marginBottom: 8 },
+  carbonContribRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  carbonContribName: { color: '#334155', fontSize: 13 },
+  carbonContribVal: { color: '#0F172A', fontSize: 13, fontWeight: '600' },
+
+  // World summary
+  worldSummary: { backgroundColor: '#F0F9FF', borderRadius: 10, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: '#BAE6FD' },
+  worldSummaryText: { color: '#334155', fontSize: 14, textAlign: 'center' },
+  highlight: { color: '#006EB7', fontWeight: '700' },
+
+  // Ingredient cards
+  ingredientCard: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
+  ingredientHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
+  ingredientName: { color: '#1E293B', fontSize: 15, fontWeight: '700', flex: 1 },
+  ingredientNameDE: { color: '#006EB7', fontSize: 12, fontWeight: '600' },
+  originDescription: { color: '#64748B', fontSize: 12, marginBottom: 10, lineHeight: 18 },
+  countryList: { gap: 8 },
+  countryRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  countryFlag: { fontSize: 20 },
+  countryInfo: { width: 120 },
+  countryName: { color: '#334155', fontSize: 13, fontWeight: '600' },
+  countryRegion: { color: '#64748B', fontSize: 11 },
+  percentageBar: { flex: 1, height: 6, backgroundColor: '#E2E8F0', borderRadius: 3, overflow: 'hidden' },
+  percentageFill: { height: '100%', borderRadius: 3 },
+  percentageText: { color: '#64748B', fontSize: 12, width: 35, textAlign: 'right' },
+  noOriginRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  noOriginText: { color: '#64748B', fontSize: 13 },
+  showMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8FAFC', borderRadius: 10, padding: 12, gap: 6, marginTop: 4, borderWidth: 1, borderColor: '#E2E8F0' },
+  showMoreText: { color: '#006EB7', fontSize: 14, fontWeight: '600' },
+
+  // Shelf life
+  shelfCard: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, borderWidth: 1.5, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  shelfRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 },
+  shelfIcon: { fontSize: 32 },
+  shelfInfo: { flex: 1 },
+  shelfDays: { fontSize: 22, fontWeight: '800' },
+  shelfLabel: { color: '#64748B', fontSize: 12, marginTop: 2 },
+  shelfTipRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FEF3C7', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#FDE68A' },
+  shelfTip: { color: '#92400E', fontSize: 13, flex: 1, lineHeight: 18 },
+
+  // Nutrition
+  nutritionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  nutritionItem: { backgroundColor: '#FFFFFF', borderRadius: 12, padding: 14, width: '30%', flexGrow: 1, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  nutritionValue: { color: '#1E293B', fontSize: 18, fontWeight: '800' },
+  nutritionUnit: { fontSize: 12, fontWeight: '400', color: '#64748B' },
+  nutritionLabel: { color: '#64748B', fontSize: 11, marginTop: 4, textAlign: 'center' },
+
+  // Price breakdown
+  priceCard: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  priceBarContainer: { flexDirection: 'row', height: 16, borderRadius: 8, overflow: 'hidden', marginBottom: 16 },
+  priceBarSegment: { height: '100%' },
+  priceLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  priceLegendDot: { width: 10, height: 10, borderRadius: 5 },
+  priceLegendLabel: { color: '#334155', fontSize: 13, flex: 1 },
+  priceLegendPct: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+
+  // Pantry Button
+  pantryButtonContainer: { marginHorizontal: 16, marginTop: 12 },
+  pantryButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 14, borderRadius: 14, borderWidth: 1.5, borderColor: '#006EB7', backgroundColor: '#fff' },
+  pantryButtonText: { color: '#006EB7', fontSize: 16, fontWeight: '700' },
+
+  // Map
+  mapWrapper: { height: 200, marginVertical: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#E2E8F0' },
+  map: { flex: 1 },
+  mapMarker: { backgroundColor: '#fff', borderRadius: 15, width: 30, height: 30, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#7C3AED', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 2, elevation: 3 },
+  mapMarkerIcon: { fontSize: 14 },
+  crowdInteraction: { flexDirection: 'row', gap: 10, marginTop: 16, borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 16 },
+  confirmBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#ECFDF5', paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#10B981' },
+  confirmText: { color: '#059669', fontSize: 13, fontWeight: '700' },
+  reportBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#FEF2F2', paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#EF4444' },
+  reportText: { color: '#B91C1C', fontSize: 13, fontWeight: '700' },
+});
