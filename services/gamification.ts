@@ -26,7 +26,7 @@ export interface GamificationData {
  * Deciding which achievements are available in the app.
  * Each has a unique ID so we can check if the user has already earned it.
  */
-const ALL_ACHIEVEMENTS: Omit<Achievement, 'unlockedAt'>[] = [
+export const ALL_ACHIEVEMENTS: Omit<Achievement, 'unlockedAt'>[] = [
   {
     id: 'first_scan',
     emoji: '🔍',

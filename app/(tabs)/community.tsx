@@ -1,8 +1,16 @@
-import { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ScrollView } from 'react-native';
+import { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { getGamificationData, GamificationData, getTrustScore, getLevel } from '../../services/gamification';
+import { useFocusEffect } from '@react-navigation/native';
+import {
+  getGamificationData,
+  GamificationData,
+  getTrustScore,
+  getLevel,
+  TOTAL_ACHIEVEMENTS,
+  ALL_ACHIEVEMENTS,
+} from '../../services/gamification';
 
 interface LeaderboardUser {
   id: string;
@@ -22,29 +30,34 @@ const MOCK_LEADERBOARD: LeaderboardUser[] = [
   { id: '5', name: 'Thomas P.', avatar: '👨‍🎨', points: 610, scans: 15, level: 'Fortgeschritten' },
 ];
 
+const RANK_MEDALS: Record<number, string> = { 0: '🥇', 1: '🥈', 2: '🥉' };
+const RANK_COLORS = ['#F59E0B', '#94A3B8', '#CD7F32'];
+
 export default function CommunityScreen() {
   const [userData, setUserData] = useState<GamificationData | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardUser[]>([]);
+  const [showAchievements, setShowAchievements] = useState(false);
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [])
+  );
 
   const loadData = async () => {
     const data = await getGamificationData();
     setUserData(data);
 
     const score = getTrustScore(data);
-    const level = getLevel(score);
+    const lvl = getLevel(score);
 
-    // Integrate current user into mock leaderboard
     const me: LeaderboardUser = {
       id: 'me',
-      name: 'Du (Ich)',
+      name: 'Du',
       avatar: '🥑',
-      points: score * 10, // Simulated points for demo
+      points: score * 10,
       scans: data.totalScans,
-      level: level.label,
+      level: lvl.label,
       isMe: true,
     };
 
@@ -52,32 +65,48 @@ export default function CommunityScreen() {
     setLeaderboard(sorted);
   };
 
+  const trustScore = userData ? getTrustScore(userData) : 0;
+  const level = getLevel(trustScore);
+  const myRank = leaderboard.findIndex((u) => u.isMe) + 1;
+
   const renderLeaderItem = ({ item, index }: { item: LeaderboardUser; index: number }) => {
     const isTop3 = index < 3;
-    const rankColors = ['#F59E0B', '#94A3B8', '#B45309'];
-
     return (
-      <View style={[styles.leaderCard, item.isMe && styles.meCard]}>
-        <View style={styles.rankContainer}>
+      <View style={[styles.leaderRow, item.isMe && styles.leaderRowMe]}>
+        <View style={styles.leaderRank}>
           {isTop3 ? (
-            <Ionicons name="trophy" size={20} color={rankColors[index]} />
+            <Text style={styles.leaderMedal}>{RANK_MEDALS[index]}</Text>
           ) : (
-            <Text style={styles.rankText}>{index + 1}</Text>
+            <Text style={[styles.leaderRankNum, item.isMe && { color: '#006EB7' }]}>
+              #{index + 1}
+            </Text>
           )}
         </View>
-        
-        <View style={styles.avatarBox}>
-          <Text style={styles.avatarEmoji}>{item.avatar}</Text>
+
+        <View style={[styles.leaderAvatar, isTop3 && { borderColor: RANK_COLORS[index] }]}>
+          <Text style={styles.leaderAvatarEmoji}>{item.avatar}</Text>
         </View>
 
-        <View style={styles.userInfo}>
-          <Text style={[styles.userName, item.isMe && styles.meText]}>{item.name}</Text>
-          <Text style={styles.userLevel}>{item.level}</Text>
+        <View style={styles.leaderInfo}>
+          <Text style={[styles.leaderName, item.isMe && styles.leaderNameMe]}>
+            {item.name}
+          </Text>
+          <Text style={styles.leaderLevel}>{item.level} · {item.scans} Scans</Text>
         </View>
 
-        <View style={styles.statsBox}>
-          <Text style={styles.pointsText}>{item.points} Pkt.</Text>
-          <Text style={styles.scansText}>{item.scans} Scans</Text>
+        <View style={[
+          styles.leaderPointsBadge,
+          item.isMe && styles.leaderPointsBadgeMe,
+          isTop3 && { borderColor: RANK_COLORS[index] },
+        ]}>
+          <Text style={[
+            styles.leaderPoints,
+            item.isMe && { color: '#006EB7' },
+            isTop3 && { color: RANK_COLORS[index] },
+          ]}>
+            {item.points}
+          </Text>
+          <Text style={styles.leaderPointsLabel}>Pkt.</Text>
         </View>
       </View>
     );
@@ -85,87 +114,278 @@ export default function CommunityScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <LinearGradient colors={['#006EB7', '#004B87']} style={styles.header}>
-        <Text style={styles.headerTitle}>Community & Rank</Text>
-        <Text style={styles.headerSubtitle}>Werden Sie ein Root Route-Experte!</Text>
-        
-        <View style={styles.myStatsRow}>
-          <View style={styles.myStat}>
-            <Text style={styles.myStatLabel}>Meine Punkte</Text>
-            <Text style={styles.myStatValue}>{userData ? getTrustScore(userData) * 10 : 0}</Text>
-          </View>
-          <View style={styles.myStatDivider} />
-          <View style={styles.myStat}>
-            <Text style={styles.myStatLabel}>Rang</Text>
-            <Text style={styles.myStatValue}>#{leaderboard.findIndex(u => u.isMe) + 1}</Text>
-          </View>
-        </View>
-      </LinearGradient>
-
-      {/* Info Section */}
-      <View style={styles.infoSection}>
-        <View style={styles.infoIcon}>
-          <Ionicons name="people" size={24} color="#006EB7" />
-        </View>
-        <View style={styles.infoTextContainer}>
-          <Text style={styles.infoTitle}>Crowd Intelligence</Text>
-          <Text style={styles.infoText}>
-            Bestätige Daten von Produkten, um Punkte zu sammeln und die Transparenz für alle zu erhöhen.
-          </Text>
-        </View>
-      </View>
-
-      <View style={styles.listHeader}>
-        <Text style={styles.listHeaderTitle}>🏆 Bestenliste</Text>
-        <Text style={styles.listHeaderDate}>März 2026</Text>
-      </View>
-
       <FlatList
         data={leaderboard}
         keyExtractor={(item) => item.id}
+        showsVerticalScrollIndicator={false}
+        ListHeaderComponent={
+          <>
+            {/* ── Gradient Header ── */}
+            <LinearGradient colors={['#006EB7', '#004B87']} style={styles.header}>
+              <Text style={styles.headerTitle}>Community</Text>
+              <Text style={styles.headerSubtitle}>Dein Fortschritt auf einen Blick</Text>
+
+              <View style={styles.levelCard}>
+                <View style={styles.levelLeft}>
+                  <Text style={styles.levelEmoji}>{level.emoji}</Text>
+                  <View>
+                    <Text style={styles.levelLabel}>{level.label}</Text>
+                    <Text style={styles.levelSub}>Trust Score {trustScore}/100</Text>
+                  </View>
+                </View>
+                {myRank > 0 && (
+                  <View style={styles.rankBadge}>
+                    <Text style={styles.rankBadgeText}>Rang #{myRank}</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.progressBarBg}>
+                <View style={[styles.progressBarFill, { width: `${trustScore}%`, backgroundColor: level.color }]} />
+              </View>
+            </LinearGradient>
+
+            {/* ── Stats Row ── */}
+            <View style={styles.statsRow}>
+              <View style={styles.statCard}>
+                <Ionicons name="shield-checkmark-outline" size={20} color="#4ADE80" />
+                <Text style={[styles.statValue, { color: '#4ADE80' }]}>{trustScore}</Text>
+                <Text style={styles.statLabel}>Trust Score</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Ionicons name="barcode-outline" size={20} color="#60A5FA" />
+                <Text style={[styles.statValue, { color: '#60A5FA' }]}>{userData?.totalScans ?? 0}</Text>
+                <Text style={styles.statLabel}>Scans</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Ionicons name="trophy-outline" size={20} color="#F59E0B" />
+                <Text style={[styles.statValue, { color: '#F59E0B' }]}>
+                  {userData?.achievements.length ?? 0}/{TOTAL_ACHIEVEMENTS}
+                </Text>
+                <Text style={styles.statLabel}>Badges</Text>
+              </View>
+            </View>
+
+            {/* ── Achievements Button ── */}
+            <TouchableOpacity
+              style={styles.achievementsBtn}
+              onPress={() => setShowAchievements(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="trophy-outline" size={18} color="#006EB7" />
+              <Text style={styles.achievementsBtnText}>
+                Errungenschaften ansehen ({userData?.achievements.length ?? 0}/{TOTAL_ACHIEVEMENTS})
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color="#006EB7" />
+            </TouchableOpacity>
+
+            {/* ── Leaderboard Header ── */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>🏆 Bestenliste</Text>
+              <Text style={styles.sectionDate}>März 2026</Text>
+            </View>
+          </>
+        }
         renderItem={renderLeaderItem}
         contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
+        ItemSeparatorComponent={() => <View style={styles.separator} />}
       />
+
+      {/* ── Achievements Modal ── */}
+      <Modal
+        visible={showAchievements}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowAchievements(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowAchievements(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                🏅 Errungenschaften ({userData?.achievements.length ?? 0}/{TOTAL_ACHIEVEMENTS})
+              </Text>
+              <TouchableOpacity style={styles.modalClose} onPress={() => setShowAchievements(false)}>
+                <Ionicons name="close" size={18} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView contentContainerStyle={styles.achievementsGrid} style={{ padding: 16 }}>
+              {ALL_ACHIEVEMENTS.map((ach) => {
+                const unlocked = userData?.achievements.find((a) => a.id === ach.id);
+                return (
+                  <View
+                    key={ach.id}
+                    style={[styles.achievementBadge, !unlocked && styles.achievementBadgeLocked]}
+                  >
+                    <Text style={[styles.achievementEmoji, !unlocked && { opacity: 0.3 }]}>
+                      {unlocked ? ach.emoji : '🔒'}
+                    </Text>
+                    <Text style={[styles.achievementName, !unlocked && styles.achievementTextLocked]}>
+                      {ach.title}
+                    </Text>
+                    <Text style={[styles.achievementDesc, !unlocked && styles.achievementTextLocked]}>
+                      {ach.description}
+                    </Text>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
-  header: { padding: 24, paddingBottom: 32, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerTitle: { color: '#FFFFFF', fontSize: 24, fontWeight: '800' },
-  headerSubtitle: { color: '#E0F2FE', fontSize: 14, marginTop: 4, opacity: 0.9 },
-  
-  myStatsRow: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 16, marginTop: 24, padding: 16, alignItems: 'center' },
-  myStat: { flex: 1, alignItems: 'center' },
-  myStatLabel: { color: '#E0F2FE', fontSize: 12, marginBottom: 4 },
-  myStatValue: { color: '#FFFFFF', fontSize: 20, fontWeight: '800' },
-  myStatDivider: { width: 1, height: 30, backgroundColor: 'rgba(255,255,255,0.2)' },
 
-  infoSection: { flexDirection: 'row', backgroundColor: '#FFFFFF', margin: 16, padding: 16, borderRadius: 16, alignItems: 'center', gap: 14, borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
-  infoIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#E0F2FE', alignItems: 'center', justifyContent: 'center' },
-  infoTextContainer: { flex: 1 },
-  infoTitle: { color: '#1E293B', fontSize: 15, fontWeight: '700', marginBottom: 2 },
-  infoText: { color: '#64748B', fontSize: 12, lineHeight: 18 },
+  // Header
+  header: {
+    paddingTop: 20,
+    paddingHorizontal: 20,
+    paddingBottom: 28,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+  },
+  headerTitle: { color: '#fff', fontSize: 26, fontWeight: '800' },
+  headerSubtitle: { color: '#BAE6FD', fontSize: 13, marginTop: 2, marginBottom: 20 },
 
-  listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginHorizontal: 20, marginBottom: 10, marginTop: 10 },
-  listHeaderTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B' },
-  listHeaderDate: { fontSize: 13, color: '#64748B' },
+  levelCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 14,
+  },
+  levelLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  levelEmoji: { fontSize: 36 },
+  levelLabel: { color: '#fff', fontSize: 18, fontWeight: '800' },
+  levelSub: { color: '#BAE6FD', fontSize: 12, marginTop: 2 },
+  rankBadge: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  rankBadgeText: { color: '#fff', fontWeight: '700', fontSize: 13 },
 
-  listContent: { padding: 16, paddingTop: 0 },
-  leaderCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 14, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0' },
-  meCard: { borderColor: '#006EB7', backgroundColor: '#F0F9FF', borderWidth: 2 },
-  rankContainer: { width: 30, alignItems: 'center' },
-  rankText: { fontSize: 15, fontWeight: '700', color: '#64748B' },
-  avatarBox: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', marginHorizontal: 10, borderWidth: 1, borderColor: '#E2E8F0' },
-  avatarEmoji: { fontSize: 22 },
-  userInfo: { flex: 1 },
-  userName: { fontSize: 15, fontWeight: '700', color: '#1E293B' },
-  meText: { color: '#006EB7' },
-  userLevel: { fontSize: 12, color: '#64748B', marginTop: 2 },
-  statsBox: { alignItems: 'flex-end', gap: 2 },
-  pointsText: { fontSize: 14, fontWeight: '800', color: '#006EB7' },
-  scansText: { fontSize: 11, color: '#94A3B8' },
+  progressBarBg: { height: 8, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 4, overflow: 'hidden' },
+  progressBarFill: { height: '100%', borderRadius: 4 },
+
+  // Stats
+  statsRow: { flexDirection: 'row', gap: 10, marginHorizontal: 16, marginTop: 16, marginBottom: 4 },
+  statCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 14,
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1,
+  },
+  statValue: { fontSize: 20, fontWeight: '800' },
+  statLabel: { color: '#94A3B8', fontSize: 10, fontWeight: '600', textTransform: 'uppercase' },
+
+  // Achievements button
+  achievementsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  achievementsBtnText: { flex: 1, color: '#006EB7', fontWeight: '700', fontSize: 14 },
+
+  // Section header
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginTop: 20,
+    marginBottom: 10,
+  },
+  sectionTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B' },
+  sectionDate: { fontSize: 12, color: '#94A3B8' },
+
+  // Leaderboard
+  listContent: { paddingBottom: 40 },
+  separator: { height: 1, backgroundColor: '#F1F5F9', marginHorizontal: 16 },
+  leaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  leaderRowMe: { backgroundColor: '#EFF6FF' },
+  leaderRank: { width: 32, alignItems: 'center' },
+  leaderMedal: { fontSize: 22 },
+  leaderRankNum: { fontSize: 14, fontWeight: '700', color: '#94A3B8' },
+  leaderAvatar: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: '#E2E8F0',
+  },
+  leaderAvatarEmoji: { fontSize: 20 },
+  leaderInfo: { flex: 1 },
+  leaderName: { fontSize: 14, fontWeight: '700', color: '#1E293B' },
+  leaderNameMe: { color: '#006EB7' },
+  leaderLevel: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  leaderPointsBadge: {
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  leaderPointsBadgeMe: { backgroundColor: '#DBEAFE', borderColor: '#93C5FD' },
+  leaderPoints: { fontSize: 15, fontWeight: '800', color: '#475569' },
+  leaderPointsLabel: { fontSize: 9, color: '#94A3B8', fontWeight: '600', textTransform: 'uppercase' },
+
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40, maxHeight: '85%' },
+  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#E2E8F0', alignSelf: 'center', marginTop: 12, marginBottom: 4 },
+  modalHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingVertical: 14,
+    borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
+  },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: '#1E293B' },
+  modalClose: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' },
+
+  // Achievements grid (used in modal)
+  achievementsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  achievementBadge: {
+    backgroundColor: '#FFFFFF', borderRadius: 14, padding: 14,
+    alignItems: 'center', width: '30%', flexGrow: 1, minWidth: 90,
+    borderWidth: 1, borderColor: '#006EB7',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1,
+  },
+  achievementBadgeLocked: { borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  achievementEmoji: { fontSize: 28, marginBottom: 6 },
+  achievementName: { color: '#1E293B', fontSize: 11, fontWeight: '700', textAlign: 'center', marginBottom: 3 },
+  achievementDesc: { color: '#64748B', fontSize: 10, textAlign: 'center', lineHeight: 14 },
+  achievementTextLocked: { color: '#CBD5E1' },
 });

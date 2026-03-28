@@ -94,10 +94,8 @@ export default function ScannerScreen() {
     // Simple heuristic: If it's not a number or starts with L/BATCH, treat it as a lot number.
     const isLot = isNaN(Number(id)) || id.toUpperCase().startsWith('L') || id.toUpperCase().startsWith('BATCH');
 
-    setTimeout(() => {
-      router.push(`/product/${id}?isLot=${isLot}`);
-      setLoading(false);
-    }, 300);
+    router.push(`/product/${id}?isLot=${isLot}`);
+    setLoading(false);
   };
 
   const handleBarcodeScanned = ({ data }: { data: string }) => {
@@ -107,8 +105,13 @@ export default function ScannerScreen() {
   };
 
   const handleManualSearch = () => {
-    if (!manualBarcode.trim()) return;
-    handleBarcode(manualBarcode.trim());
+    const trimmed = manualBarcode.trim();
+    if (!trimmed) return;
+    if (trimmed.length < 3) {
+      Alert.alert('Eingabe zu kurz', 'Bitte mindestens 3 Zeichen eingeben.');
+      return;
+    }
+    handleBarcode(trimmed);
     setManualBarcode('');
   };
 
@@ -194,8 +197,9 @@ export default function ScannerScreen() {
 
       setShowOcrCamera(false);
       Alert.alert('Nichts erkannt', 'Halte die Kamera näher an das Produkt und versuche es erneut.');
-    } catch (err: any) {
-      Alert.alert('Fehler', err?.message ?? 'OCR-Analyse fehlgeschlagen.');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'OCR-Analyse fehlgeschlagen.';
+      Alert.alert('Fehler', message);
     } finally {
       setOcrCapturing(false);
       setOcrLoading(false);
@@ -301,7 +305,13 @@ export default function ScannerScreen() {
       </View>
 
       {/* Scan buttons */}
-      <TouchableOpacity style={styles.scanButton} onPress={startScanning} activeOpacity={0.85}>
+      <TouchableOpacity
+        style={styles.scanButton}
+        onPress={startScanning}
+        activeOpacity={0.85}
+        accessibilityRole="button"
+        accessibilityLabel="Produktions-Code mit Barcode-Scanner scannen"
+      >
         <LinearGradient
           colors={['#006EB7', '#004B87']}
           style={styles.scanButtonGradient}
@@ -312,7 +322,13 @@ export default function ScannerScreen() {
         </LinearGradient>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.ocrButton} onPress={startOcrScan} activeOpacity={0.85}>
+      <TouchableOpacity
+        style={styles.ocrButton}
+        onPress={startOcrScan}
+        activeOpacity={0.85}
+        accessibilityRole="button"
+        accessibilityLabel="Foto aufnehmen, KI erkennt Produkt automatisch"
+      >
         <LinearGradient
           colors={['#7C3AED', '#5B21B6']}
           style={styles.scanButtonGradient}

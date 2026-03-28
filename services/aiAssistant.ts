@@ -97,24 +97,16 @@ function getFriendlyGeminiError(error: unknown): string {
 type ModelOptions = {
   model: string;
   systemInstruction?: string;
-  // Google Search is optional and may be rejected depending on API/model support.
-  tools?: Array<{ googleSearch: {} }>;
+  // Google Search grounding – the SDK types don't expose this field yet,
+  // so we use a typed extension to avoid unsafe @ts-ignore casts.
+  tools?: Array<{ googleSearch: Record<string, never> }>;
 };
 
 function getModelCandidates(systemInstruction?: string): ModelOptions[] {
+  const googleSearch: { googleSearch: Record<string, never> } = { googleSearch: {} };
   return [
-    {
-      model: PRIMARY_MODEL,
-      systemInstruction,
-      // @ts-ignore - Supported by Gemini, but not always reflected in SDK typings
-      tools: [{ googleSearch: {} }],
-    },
-    {
-      model: FALLBACK_MODEL,
-      systemInstruction,
-      // @ts-ignore - Supported by Gemini, but not always reflected in SDK typings
-      tools: [{ googleSearch: {} }],
-    },
+    { model: PRIMARY_MODEL, systemInstruction, tools: [googleSearch] },
+    { model: FALLBACK_MODEL, systemInstruction, tools: [googleSearch] },
     { model: PRIMARY_MODEL, systemInstruction },
     { model: FALLBACK_MODEL, systemInstruction },
   ];
