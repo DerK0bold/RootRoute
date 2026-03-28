@@ -153,26 +153,39 @@ export default function ProductScreen() {
 
       // Real OCR first: read lot number from image using Gemini.
       const ocrResult = await analyzeProductImage(photo.base64, product?.brands, productName);
-      let detectedLot: string | null =
+      const ocrDetectedLot =
         normalizeLot(ocrResult.lotNumber) ||
         extractLotFromText(ocrResult.description) ||
-        lotNumber ||
         null;
 
-      // Keep lightweight fallback mapping for demo reliability when OCR misses.
+      let detectedLot: string | null = ocrDetectedLot || lotNumber || null;
+      let mockData = detectedLot ? getTraceability(detectedLot) : null;
+
+      // If the exact OCR lot is not in local demo data, fallback by product context.
       const lowerName = productName.toLowerCase();
-      if (!detectedLot && (lowerName.includes('ginger') || lowerName.includes('ingwer'))) {
+      if (!mockData && (lowerName.includes('ginger') || lowerName.includes('ingwer'))) {
         detectedLot = 'L2590069';
-      } else if (!detectedLot && (lowerName.includes('mint') || lowerName.includes('minze'))) {
+        mockData = getTraceability(detectedLot);
+      } else if (!mockData && (lowerName.includes('mint') || lowerName.includes('minze'))) {
         detectedLot = 'L2590059';
-      } else if (!detectedLot && (lowerName.includes('toblerone') || lowerName.includes('chocolate') || lowerName.includes('schokolade'))) {
+        mockData = getTraceability(detectedLot);
+      } else if (!mockData && (lowerName.includes('toblerone') || lowerName.includes('chocolate') || lowerName.includes('schokolade'))) {
         detectedLot = 'L2506032';
+        mockData = getTraceability(detectedLot);
+      } else if (!mockData) {
+        detectedLot = 'L-TONY-24-001';
+        mockData = getTraceability(detectedLot);
       }
 
-      const mockData = detectedLot ? getTraceability(detectedLot) : null;
       if (mockData) {
         setTraceability(mockData);
         setShowBatchCamera(false);
+        if (ocrDetectedLot && ocrDetectedLot !== mockData.lotNumber) {
+          Alert.alert(
+            'Hinweis',
+            `Charge ${ocrDetectedLot} wurde gelesen, ist aber nicht in den lokalen Demo-Daten. Wir zeigen stattdessen eine passende Beispiel-Charge (${mockData.lotNumber}).`
+          );
+        }
       } else {
         Alert.alert('Nicht erkannt', 'Chargennummer konnte nicht sicher erkannt werden. Bitte Code klar und nah fotografieren.');
       }
