@@ -11,6 +11,11 @@ export interface TraceabilityData {
   origin: string;
   farm: string;
   harvestMethod: string;
+  coolingChainWarning?: {
+    title: string;
+    message: string;
+    observedAt: string;
+  };
   journey: {
     event: string;
     location: string;
@@ -74,13 +79,46 @@ const MOCK_TRACEABILITY: Record<string, TraceabilityData> = {
     isVerified: true,
     confirmations: 256,
   },
+  'L2506032': {
+    lotNumber: 'L2506032',
+    productionDate: '06.03.2026',
+    origin: 'Luzern, Schweiz',
+    farm: 'Regionaler Frischeverbund Zentralschweiz',
+    harvestMethod: 'Gekuehlte Sammelernte',
+    coolingChainWarning: {
+      title: 'Stoerung in der Kuehlkette erkannt',
+      message: 'Zwischen Umschlagzentrum und letzter Meile wurde fuer 48 Minuten ein Temperaturanstieg auf 11.2°C gemessen.',
+      observedAt: '06.03.2026 03:40',
+    },
+    journey: [
+      { event: 'Ernte', location: 'Region Sempachersee', date: '04.03.2026', icon: '🚜', coordinates: { latitude: 47.1244, longitude: 8.1946 } },
+      { event: 'Vorkuehlung', location: 'Kuehlhaus Sursee', date: '05.03.2026', icon: '❄️', coordinates: { latitude: 47.1731, longitude: 8.1111 } },
+      { event: 'Verladung', location: 'Hub Zofingen', date: '06.03.2026', icon: '📦', coordinates: { latitude: 47.2880, longitude: 7.9459 } },
+      { event: 'Anlieferung', location: 'Filiale Baden', date: '06.03.2026', icon: '🚚', coordinates: { latitude: 47.4733, longitude: 8.3080 } },
+    ],
+    isVerified: false,
+    confirmations: 12,
+  },
 };
+
+function normalizeLotNumber(value: string): string {
+  return (value || '')
+    .toUpperCase()
+    .replace(/^LOT[:\-\s]*/i, '')
+    .replace(/[^A-Z0-9-]/g, '')
+    .trim();
+}
 
 /**
  * Searches for traceability data based on a given lot number (batch).
  */
 export function getTraceability(lotNumber: string): TraceabilityData | null {
-  return MOCK_TRACEABILITY[lotNumber] || null;
+  const normalized = normalizeLotNumber(lotNumber);
+  const direct = MOCK_TRACEABILITY[lotNumber];
+  if (direct) return direct;
+
+  const key = Object.keys(MOCK_TRACEABILITY).find((k) => normalizeLotNumber(k) === normalized);
+  return key ? MOCK_TRACEABILITY[key] : null;
 }
 
 /**
@@ -88,11 +126,13 @@ export function getTraceability(lotNumber: string): TraceabilityData | null {
  * This helps us link a scanned lot back to the general product information.
  */
 export function getBarcodeFromLot(lotNumber: string): string | null {
-  if (lotNumber.includes('CUC')) return '7612100040789';
-  if (lotNumber.includes('LINDT')) return '3046920022981';
-  if (lotNumber.includes('TONY')) return '7640161170014';
-  if (lotNumber === 'L2590069') return '7640161170069'; // Ginger
-  if (lotNumber === 'L2590059') return '7640161170274'; // Mint
+  const normalized = normalizeLotNumber(lotNumber);
+  if (normalized.includes('CUC')) return '7612100040789';
+  if (normalized.includes('LINDT')) return '3046920022981';
+  if (normalized.includes('TONY')) return '7640161170014';
+  if (normalized === 'L2506032') return '7612100040789';
+  if (normalized === 'L2590069') return '7640161170069'; // Ginger
+  if (normalized === 'L2590059') return '7640161170274'; // Mint
   return null;
 }
 

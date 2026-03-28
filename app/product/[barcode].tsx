@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
-import { getTraceability, TraceabilityData, calculateTrustScore } from '../../services/traceabilityService';
+import { getTraceability, getBarcodeFromLot, TraceabilityData, calculateTrustScore } from '../../services/traceabilityService';
 import { analyzeProductImage, checkProductSafety, SafetyResult } from '../../services/aiAssistant';
 import { addToPantry } from '../../services/pantryService';
 import {
@@ -82,7 +82,7 @@ function getPriceBreakdown(categories: string): { label: string; pct: number; co
 
 export default function ProductScreen() {
   const { barcode: id, isLot, ean } = useLocalSearchParams<{ barcode: string; isLot?: string; ean?: string }>();
-  const barcode = isLot === 'true' ? ean || id : id;
+  const barcode = isLot === 'true' ? ean || getBarcodeFromLot(id) || id : id;
   const lotNumber = isLot === 'true' ? id : undefined;
   const router = useRouter();
   // --- State Management ---
@@ -108,6 +108,29 @@ export default function ProductScreen() {
 
   const productName = product?.product_name_de || product?.product_name || 'Unbekanntes Produkt';
 
+  const normalizeLot = (value?: string): string | null => {
+    if (!value) return null;
+    const normalized = value
+      .toUpperCase()
+      .replace(/^LOT[:\-\s]*/i, '')
+      .replace(/[^A-Z0-9-]/g, '')
+      .trim();
+    return normalized.length >= 4 ? normalized : null;
+  };
+
+  const extractLotFromText = (value?: string): string | null => {
+    if (!value) return null;
+    const candidates = [
+      /(?:LOT|BATCH|CHARGE)\s*[:#-]?\s*([A-Z0-9-]{4,})/i,
+      /\b(L[0-9]{6,}[A-Z0-9-]*)\b/i,
+    ];
+    for (const pattern of candidates) {
+      const match = value.match(pattern);
+      if (match?.[1]) return normalizeLot(match[1]);
+    }
+    return null;
+  };
+
   useEffect(() => {
     if (barcode) loadProduct(barcode);
     if (lotNumber) {
@@ -128,23 +151,30 @@ export default function ProductScreen() {
       const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.5 });
       if (!photo?.base64) return;
 
-      // Mocking OCR to save API costs as requested
-      // In a real app, this would use analyzeProductImage
-      // For the demo, we simulate finding a lot number if the brand is El Tony
-      let detectedLot: string | null = 'L-TONY-24-001'; 
+      // Real OCR first: read lot number from image using Gemini.
+      const ocrResult = await analyzeProductImage(photo.base64, product?.brands, productName);
+      let detectedLot: string | null =
+        normalizeLot(ocrResult.lotNumber) ||
+        extractLotFromText(ocrResult.description) ||
+        lotNumber ||
+        null;
+
+      // Keep lightweight fallback mapping for demo reliability when OCR misses.
       const lowerName = productName.toLowerCase();
-      if (lowerName.includes('ginger') || lowerName.includes('ingwer')) {
+      if (!detectedLot && (lowerName.includes('ginger') || lowerName.includes('ingwer'))) {
         detectedLot = 'L2590069';
-      } else if (lowerName.includes('mint') || lowerName.includes('minze')) {
+      } else if (!detectedLot && (lowerName.includes('mint') || lowerName.includes('minze'))) {
         detectedLot = 'L2590059';
+      } else if (!detectedLot && (lowerName.includes('toblerone') || lowerName.includes('chocolate') || lowerName.includes('schokolade'))) {
+        detectedLot = 'L2506032';
       }
 
-      const mockData = getTraceability(detectedLot);
+      const mockData = detectedLot ? getTraceability(detectedLot) : null;
       if (mockData) {
         setTraceability(mockData);
         setShowBatchCamera(false);
       } else {
-        Alert.alert('Nicht erkannt', 'Keine lokale Charge für dieses Produkt gefunden.');
+        Alert.alert('Nicht erkannt', 'Chargennummer konnte nicht sicher erkannt werden. Bitte Code klar und nah fotografieren.');
       }
     } catch (e) {
       console.error(e);
@@ -298,6 +328,24 @@ export default function ProductScreen() {
               <Text style={[styles.aiBadgeText, { color: aiSafety.severity === 'critical' ? '#EF4444' : '#F59E0B' }]}>
                 Live-Analyse durch Gemini AI
               </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Batch-specific cooling chain warning */}
+        {traceability?.coolingChainWarning && (
+          <View style={[styles.recallBanner, styles.recallWarning]}>
+            <View style={styles.recallIconRow}>
+              <Text style={styles.recallIcon}>🧊</Text>
+              <View style={styles.recallTextBlock}>
+                <Text style={styles.recallTitle}>{traceability.coolingChainWarning.title}</Text>
+                <Text style={styles.recallId}>Batch: {traceability.lotNumber} · {traceability.coolingChainWarning.observedAt}</Text>
+              </View>
+            </View>
+            <Text style={styles.recallReason}>{traceability.coolingChainWarning.message}</Text>
+            <View style={styles.recallActionBox}>
+              <Ionicons name="snow" size={16} color="#fff" />
+              <Text style={styles.recallAction}>Bitte Produkt vor dem Verzehr auf Geruch, Konsistenz und Mindesthaltbarkeit pruefen.</Text>
             </View>
           </View>
         )}
