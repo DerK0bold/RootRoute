@@ -2,7 +2,6 @@ import { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TextInput,
   TouchableOpacity,
   FlatList,
@@ -16,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { sendMessage, ChatMessage, QUICK_SUGGESTIONS } from '../../services/aiAssistant';
 import { HAS_GEMINI_API_KEY } from '../../constants/config';
+import styles from '../../styles/ai.styles';
 
 const API_KEY_SET = HAS_GEMINI_API_KEY;
 
@@ -102,10 +102,10 @@ export default function AIScreen() {
   const renderMessage = useCallback(({ item }: { item: Message }) => {
     if (item.isLoading) {
       return (
-        <View style={[styles.messageBubble, styles.aiBubble]}>
-          <View style={styles.typingIndicator}>
+        <View style={styles.loadingBubble}>
+          <View style={styles.loadingRow}>
             <ActivityIndicator size="small" color="#006EB7" />
-            <Text style={styles.typingText}>Denkt nach…</Text>
+            <Text style={styles.loadingText}>Denkt nach…</Text>
           </View>
         </View>
       );
@@ -119,8 +119,8 @@ export default function AIScreen() {
             <Text style={styles.aiAvatarEmoji}>🤖</Text>
           </View>
         )}
-        <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.aiBubble]}>
-          <Text style={[styles.messageText, isUser && styles.userMessageText]}>
+        <View style={isUser ? styles.userBubble : styles.aiBubble}>
+          <Text style={isUser ? styles.userMessageText : styles.aiMessageText}>
             {item.content}
           </Text>
         </View>
@@ -151,218 +151,87 @@ export default function AIScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <KeyboardAvoidingView
-        style={styles.container}
+        style={styles.keyboardView}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={0}
       >
-      {/* Header */}
-      <LinearGradient colors={['#006EB7', '#004B87']} style={styles.header}>
-        <View style={styles.headerLeft}>
-          <View style={styles.headerAvatarCircle}>
-            <Text style={styles.headerAvatarEmoji}>🤖</Text>
+        {/* Header */}
+        <LinearGradient colors={['#006EB7', '#004B87']} style={styles.header}>
+          <View style={styles.headerLeft}>
+            <View style={styles.headerAvatarContainer}>
+              <Text style={styles.headerAvatarEmoji}>🤖</Text>
+            </View>
+            <View>
+              <Text style={styles.headerTitle}>KI-Assistent</Text>
+              <Text style={styles.headerSubtitle}>Lebensmittel-Experte</Text>
+            </View>
           </View>
-          <View>
-            <Text style={styles.headerTitle}>KI-Assistent</Text>
-            <Text style={styles.headerSubtitle}>Lebensmittel-Experte</Text>
-          </View>
-        </View>
-        <TouchableOpacity onPress={handleClear} style={styles.clearBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="trash-outline" size={20} color="#6B7280" />
-        </TouchableOpacity>
-      </LinearGradient>
+          <TouchableOpacity onPress={handleClear} style={styles.clearBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="trash-outline" size={20} color="#6B7280" />
+          </TouchableOpacity>
+        </LinearGradient>
 
-      {/* Quick suggestions (only when no real conversation yet) */}
-      {messages.length <= 1 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.suggestionsRow}
-          contentContainerStyle={styles.suggestionsContent}
-        >
-          {QUICK_SUGGESTIONS.map((s, i) => (
-            <TouchableOpacity
-              key={i}
-              style={styles.suggestionChip}
-              onPress={() => handleSend(s)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.suggestionText}>{s}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
+        {/* Quick suggestions (only when no real conversation yet) */}
+        {messages.length <= 1 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.suggestionsRow}
+            contentContainerStyle={styles.suggestionsContent}
+          >
+            {QUICK_SUGGESTIONS.map((s, i) => (
+              <TouchableOpacity
+                key={i}
+                style={styles.suggestionChip}
+                onPress={() => handleSend(s)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.suggestionText}>{s}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
 
-      {/* Message list */}
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item) => item.id}
-        renderItem={renderMessage}
-        contentContainerStyle={styles.messageList}
-        onContentSizeChange={scrollToBottom}
-        showsVerticalScrollIndicator={false}
-      />
-
-      {/* Input bar */}
-      <View style={styles.inputBar}>
-        <TextInput
-          style={styles.textInput}
-          placeholder="Frag mich etwas über Lebensmittel…"
-          placeholderTextColor="#4B5563"
-          value={input}
-          onChangeText={setInput}
-          multiline
-          maxLength={500}
-          returnKeyType="send"
-          onSubmitEditing={() => handleSend()}
-          blurOnSubmit={false}
-          editable={!loading}
+        {/* Message list */}
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          keyExtractor={(item) => item.id}
+          renderItem={renderMessage}
+          contentContainerStyle={styles.messageListContent}
+          onContentSizeChange={scrollToBottom}
+          showsVerticalScrollIndicator={false}
         />
-        <TouchableOpacity
-          style={[styles.sendBtn, (!input.trim() || loading) && styles.sendBtnDisabled]}
-          onPress={() => handleSend()}
-          activeOpacity={0.8}
-          disabled={!input.trim() || loading}
-        >
-          {loading ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="send" size={20} color="#fff" />
-          )}
-        </TouchableOpacity>
-      </View>
+
+        {/* Input bar */}
+        <View style={styles.inputBar}>
+          <TextInput
+            style={[styles.textInput, { maxHeight: 120 }]}
+            placeholder="Frag mich etwas über Lebensmittel…"
+            placeholderTextColor="#4B5563"
+            value={input}
+            onChangeText={setInput}
+            multiline
+            maxLength={500}
+            returnKeyType="send"
+            onSubmitEditing={() => handleSend()}
+            blurOnSubmit={false}
+            editable={!loading}
+          />
+          <TouchableOpacity
+            style={[styles.sendBtn, (!input.trim() || loading) && styles.sendBtnDisabled]}
+            onPress={() => handleSend()}
+            activeOpacity={0.8}
+            disabled={!input.trim() || loading}
+          >
+            {loading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="send" size={20} color="#fff" />
+            )}
+          </TouchableOpacity>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#006EB7', // match the header top to blend with safe area
-  },
-  container: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-
-  // No API key state
-  noKeyContainer: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-  },
-  noKeyEmoji: { fontSize: 56, marginBottom: 16 },
-  noKeyTitle: { color: '#1E293B', fontSize: 22, fontWeight: '800', marginBottom: 12 },
-  noKeyText: { color: '#64748B', fontSize: 15, textAlign: 'center', lineHeight: 24, marginBottom: 24 },
-  noKeyCode: { color: '#006EB7', fontWeight: '700' },
-  noKeySteps: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, width: '100%', borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1 },
-  noKeyStep: { color: '#1E293B', fontSize: 14, marginBottom: 8, lineHeight: 20 },
-
-  // Header
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#004B87',
-  },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  headerAvatarCircle: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1.5, borderColor: '#BAE6FD',
-  },
-  headerAvatarEmoji: { fontSize: 20 },
-  headerTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
-  headerSubtitle: { color: '#E0F2FE', fontSize: 12 },
-  clearBtn: { padding: 4 },
-
-  // Suggestions
-  suggestionsRow: { maxHeight: 52, flexGrow: 0, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
-  suggestionsContent: { paddingHorizontal: 14, paddingVertical: 10, gap: 8, flexDirection: 'row' },
-  suggestionChip: {
-    backgroundColor: '#F1F5F9', borderRadius: 20,
-    paddingHorizontal: 14, paddingVertical: 7,
-    borderWidth: 1, borderColor: '#E2E8F0',
-  },
-  suggestionText: { color: '#475569', fontSize: 13, fontWeight: '500' },
-
-  // Messages
-  messageList: { paddingHorizontal: 14, paddingVertical: 12, gap: 12, flexGrow: 1 },
-
-  messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
-  messageRowUser: { flexDirection: 'row-reverse' },
-
-  aiAvatar: {
-    width: 32, height: 32, borderRadius: 16,
-    backgroundColor: '#E0F2FE', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: '#BAE6FD', flexShrink: 0, marginBottom: 2,
-  },
-  aiAvatarEmoji: { fontSize: 16 },
-
-  messageBubble: {
-    maxWidth: '80%',
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1
-  },
-  aiBubble: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderBottomLeftRadius: 4,
-  },
-  userBubble: {
-    backgroundColor: '#006EB7',
-    borderBottomRightRadius: 4,
-  },
-  messageText: {
-    color: '#1E293B',
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  userMessageText: {
-    color: '#fff',
-  },
-
-  // Typing indicator
-  typingIndicator: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
-  typingText: { color: '#006EB7', fontSize: 13, fontWeight: '500' },
-
-  // Input bar
-  inputBar: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    gap: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF',
-  },
-  textInput: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 10,
-    color: '#1E293B',
-    fontSize: 15,
-    maxHeight: 120,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  sendBtn: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: '#006EB7',
-    alignItems: 'center', justifyContent: 'center', shadowColor: '#006EB7', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2
-  },
-  sendBtnDisabled: { backgroundColor: '#CBD5E1', shadowOpacity: 0, elevation: 0 },
-});
